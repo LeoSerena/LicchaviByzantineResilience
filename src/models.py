@@ -1,10 +1,41 @@
 import os
+import math
 
 from tqdm import tqdm
 import numpy as np
 
 from apex import amp, optimizers
 import torch
+from torch import Tensor
+
+class PositionalEncoding(torch.nn.Module):
+    def __init__(
+        self,
+        emb_dim: int,
+        dropout: float = 0.1,
+        max_len: int = 5000
+    ):
+        """
+        Class of a nn.Module that add a positional encoding to the embedding
+        """
+        super().__init__()
+        self.dropout = torch.nn.Dropout(p=dropout)
+
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, emb_dim, 2) * (-math.log(10000.0) / emb_dim))
+        pe = torch.zeros(max_len, 1, emb_dim)
+        pe[:, 0, 0::2] = torch.sin(position * div_term)
+        pe[:, 0, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x: Tensor) -> Tensor:
+        """
+        Args:
+            x: Tensor, shape [batch_size, seq_len, embedding_dim]
+        """
+        x = x + torch.transpose(self.pe[:x.size(1)], 0,1)
+        return self.dropout(x)
+
 
 class NextWordPredictorModel(torch.nn.Module):
     def __init__(
@@ -17,21 +48,30 @@ class NextWordPredictorModel(torch.nn.Module):
         device : str,
         fp16 : bool = False,
         lr : float = 1e-3,
-        weight : list = None
+        weight : list = None,
+        positional_encoding : bool = True
     ):
         super().__init__()
         self.lr = lr
+        self.emb_dim = emb_dim
         self.num_lstm_hidden_layers = num_lstm_hidden_layers
         self.hidden_state_size = hidden_state_size
         self.device = device
         self.fp16 = fp16
         self.vocab_size = vocab_size
+        self.positional_encoding = positional_encoding
         # Embedding layer
         self.embedding_layer = torch.nn.Embedding(
             self.vocab_size,
             emb_dim,
             padding_idx = 0
         ).to(device)
+        # positional encoder
+        if positional_encoding:
+            self.positional_encoder = PositionalEncoding(
+                emb_dim,
+                dropout
+            )
         # LSTM layer (later replace with oupled Input and Forget Gate (CIFG) maybe)
         self.lstm = torch.nn.LSTM(
             input_size = emb_dim,
@@ -62,10 +102,14 @@ class NextWordPredictorModel(torch.nn.Module):
         
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, 1.0, gamma=0.99)
         
+
+        
     def forward(self, inputs, hidden = None):
         if hidden is None:
             hidden = self.init_hidden(inputs.shape[0])
         embeddings = self.embedding_layer(inputs)
+        if self.positional_encoding:
+            embeddings = self.positional_encoder(embeddings)
         output, hidden = self.lstm(embeddings, (hidden[0].detach(), hidden[1].detach()))
         output = self.dropout(self.tanh(self.linear1(output)))
         output = self.linear2(output)
