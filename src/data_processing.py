@@ -6,10 +6,12 @@ import nltk
 import torch
 
 def default_text_cleaner(string):
-    string = re.sub('-\n', '', string)
+    string = re.sub(r'-\n', '', string)
     string = re.sub(r"""[*#@&%£ö'ä$ü¨~^)('.+°¢=/><$\[\]`\-,:!?]""", '', string)
-    string = re.sub('[0-9]', '', string)
-    return re.sub('\n', ' ', string)
+    string = re.sub(r'[0-9]', '', string)
+    string = re.sub('unk', ' ', string)
+    string = re.sub('pad', ' ', string)
+    return string
 
 class Vocabulary():
     def __init__(
@@ -31,8 +33,8 @@ class Vocabulary():
         else:
             self.text_cleaner = default_text_cleaner
         
-        self.padding_token, self.padding_idx = '<PAD>', 0
-        self.unknown_token, self.unknown_idx = '<UNK>', 0
+        self.padding_token, self.padding_idx = 'pad', 0
+        self.unknown_token, self.unknown_idx = 'unk', 1
         self.min_word_occ = min_word_occ
         self.max_voc_size = max_voc_size
 
@@ -56,7 +58,7 @@ class Vocabulary():
             k : v for i, (k,v) in enumerate(self.vocab.items()) if i < (self.max_voc_size - 2)
         }
         
-        self.word_to_idx = {k : (i+1) for i,(k,_) in enumerate(self.vocab.items())}
+        self.word_to_idx = {k : (i+2) for i,(k,_) in enumerate(self.vocab.items())}
         self.word_to_idx[self.padding_token] = self.padding_idx
         self.vocab[self.padding_token] = 1
         self.word_to_idx[self.unknown_token] = self.unknown_idx
@@ -89,6 +91,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         self,
         vocabulary : Vocabulary,
         text : Union[str, List[str]],
+        min_seq_length : int,
         max_seq_length : int,
         device : str
     ):
@@ -96,6 +99,8 @@ class SequenceDataset(torch.utils.data.Dataset):
         self.max_seq_length = max_seq_length
         self.device = device
         if isinstance(text, str):
+            text = re.sub(r'\n', ' ', text)
+            text = re.sub(r' {2,}', ' ', text)
             text = nltk.sent_tokenize(text)
         elif isinstance(text, List):
             if not isinstance(text[0], str):
@@ -107,7 +112,11 @@ class SequenceDataset(torch.utils.data.Dataset):
             [self.get_idx(w) for w in vocabulary.tokenizer(vocabulary.text_cleaner(sentence))]
             for sentence in text
         ]
-        self.tokens = np.concatenate([self.pad_and_truncate(sequence) for sequence in tokens if len(sequence) > 1])
+        self.tokens = np.concatenate([
+            self.pad_and_truncate(sequence) 
+            for sequence in tokens 
+            if len(sequence) > min_seq_length and sum(sequence) > 1
+        ])
         
     def pad_and_truncate(self, sequence):
         sequence = np.array(sequence)
@@ -124,7 +133,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         try:
             return self.vocabulary.word_to_idx[token]
         except KeyError:
-            return self.vocabulary.unknown_idx
+            return self.vocabulary.padding_idx
         
     def __getitem__(self, idx):
         return torch.tensor(self.tokens[idx]).to(self.device)
