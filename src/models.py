@@ -1,5 +1,9 @@
 import os
 import math
+import json
+import gc
+
+from src.data_processing import FromRawTextVocabulary, SequenceDataset
 
 from tqdm import tqdm
 import numpy as np
@@ -7,6 +11,8 @@ import numpy as np
 from apex import amp
 import torch
 from torch import Tensor
+from torchtext.datasets import WikiText2
+from torchtext.data.utils import get_tokenizer
 
 class PositionalEncoding(torch.nn.Module):
     def __init__(
@@ -17,6 +23,15 @@ class PositionalEncoding(torch.nn.Module):
     ):
         """
         Class of a nn.Module that add a positional encoding to the embedding
+
+        Parameters
+        ----------
+        - emb_dim : int
+            The embedding dimension
+        - dropout : float
+            The dropout to be applied at the end of the module
+        - max_len : int
+            the maximum length of the sequence
         """
         super().__init__()
         self.dropout = torch.nn.Dropout(p=dropout)
@@ -30,8 +45,9 @@ class PositionalEncoding(torch.nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         """
-        Args:
-            x: Tensor, shape [batch_size, seq_len, embedding_dim]
+        Parameters
+        - x : torch.Tensor
+            input tensor of shape [batch_size, seq_len, embedding_dim]
         """
         x = x + torch.transpose(self.pe[:x.size(1)], 0,1)
         return self.dropout(x)
@@ -42,22 +58,43 @@ class NextWordPredictorModel(torch.nn.Module):
         type_of_rnn : str,
         emb_dim : int,
         vocab_size : int,
-        num_lstm_hidden_layers : int,
+        num_rnn_hidden_layers : int,
         hidden_state_size : int,
         dropout : float,
         device : str,
-        fp16 : bool = False,
-        lr : float = 1e-3,
         weight : list = None,
         positional_encoding : bool = True
     ):
+        """
+        Torch.nn.MModule for next word prediction using RNNs.
+
+        Parameters
+        ----------
+        - type_of_rnn : str
+            The type of RNN used. Can be ['LSTM', 'GRU']. Default: RNN
+        - emb_dim : int
+            Dimension of the embeddings vectors
+        - vocab_size : int
+            The number of tokens in the vocabulary
+        - num_rnn_hidden_layers : int
+            The number of rnn layers
+        - hidden_state_size : int
+            The hidden state size (and for LSTM the cell state size)
+        - dropout : float
+            The dropout to be used on positional ecoding (if used) and RNN layer
+        - device : str
+            The device used for training
+        - weight : list
+            The addaptive weights to be used on the tokens fo the loss.
+            Must be of the same size as the number of tokens, aka vocab_size.
+        - positional_encoding : bool
+            Whether to use the positional encoding on top of the embeddings.
+        """
         super().__init__()
-        self.lr = lr
         self.emb_dim = emb_dim
-        self.num_lstm_hidden_layers = num_lstm_hidden_layers
+        self.num_rnn_hidden_layers = num_rnn_hidden_layers
         self.hidden_state_size = hidden_state_size
         self.device = device
-        self.fp16 = fp16
         self.vocab_size = vocab_size
         self.positional_encoding = positional_encoding
         self.type_of_rnn = type_of_rnn
@@ -77,7 +114,7 @@ class NextWordPredictorModel(torch.nn.Module):
         inputs = {
             'input_size' : emb_dim,
             'hidden_size' : hidden_state_size,
-            'num_layers' : num_lstm_hidden_layers,
+            'num_layers' : num_rnn_hidden_layers,
             'dropout' : dropout,
             'batch_first' : True # -> input of the shape (bath size, seq length, emb length)
         }
@@ -88,15 +125,13 @@ class NextWordPredictorModel(torch.nn.Module):
         elif type_of_rnn == 'GRU':
             self.rnn = torch.nn.GRU(**inputs).to(device)
         else:
-            print('Default torch.n.RNN used')
+            print('Default torch.nn.RNN used')
             self.rnn = torch.nn.RNN(**inputs).to(device)
 
         self.linear = torch.nn.Linear(
             hidden_state_size,
             self.vocab_size
         ).to(device)
-        
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         
         self.criterion = torch.nn.CrossEntropyLoss(
             weight = torch.FloatTensor([weight]).to(self.device) if weight is not None else None,
@@ -109,6 +144,22 @@ class NextWordPredictorModel(torch.nn.Module):
 
         
     def forward(self, inputs, hidden):
+        """
+        Parameters
+        ----------
+        - inputs : torch.Tensor
+            The input Tensor of shape [batch size, sequence length, embedding length]
+        - hidden : torch.Tensor or Tuple(torch.Tensor, torch.Tensor)
+            The hidden state of length self.hidden_state_size. 
+            For LSTM the hidden state and the cell state.
+
+        Returns
+        -------
+        - output : torch.Tensor
+            The scores for all tokens, of size of the vocabulary
+        - hidden : torch.Tensor or Tuple(torch.Tensor, torch.Tensor)
+            The new hidden (and cell state for LSTM)
+        """
         embeddings = self.embedding_layer(inputs)
         if self.positional_encoding:
             embeddings = self.positional_encoder(embeddings)
@@ -117,6 +168,9 @@ class NextWordPredictorModel(torch.nn.Module):
         return output, hidden
     
     def init_weights(self) -> None:
+        """
+        Initialize the weights for the embeddings and the linear layers.
+        """
         initrange = 0.1
         self.embedding_layer.weight.data.uniform_(-initrange, initrange)
         self.linear.bias.data.zero_()
@@ -126,6 +180,11 @@ class NextWordPredictorModel(torch.nn.Module):
         """
         Saves the model in the given path. If no path is given, automatically saved
         in the model_path specified at training.
+        
+        Parameters
+        ----------
+        - path : str
+            The path to save the model to.
         """
         if path is not None:
             torch.save(self.state_dict(), path)
@@ -139,6 +198,11 @@ class NextWordPredictorModel(torch.nn.Module):
         """
         Loads the model from the given path. If no path is given, automatically loaded
         from the model_path specified at training.
+
+        Parameters
+        ----------
+        - path : str
+            The path to load the model from.
         """
         if path is not None:
             self.load_state_dict(torch.load(path), strict = False)
@@ -149,21 +213,42 @@ class NextWordPredictorModel(torch.nn.Module):
                 print('No path given, please enter a path to load the model.')
     
     def init_hidden(self, batch_size):
+        """
+        Initializes the hidden states (ans cell states if LSTM).
+
+        Parameters
+        ----------
+        - batch_size : int
+            The batch size
+        """
         if self.has_cell_state:
             return (
                 torch.zeros(
-                    self.num_lstm_hidden_layers, batch_size, self.hidden_state_size
+                    self.num_rnn_hidden_layers, batch_size, self.hidden_state_size
                 ).to(self.device).detach(),
                 torch.zeros(
-                    self.num_lstm_hidden_layers, batch_size, self.hidden_state_size
+                    self.num_rnn_hidden_layers, batch_size, self.hidden_state_size
                 ).to(self.device).detach()
             )
         else:
             return torch.zeros(
-                self.num_lstm_hidden_layers, batch_size, self.hidden_state_size
+                self.num_rnn_hidden_layers, batch_size, self.hidden_state_size
             ).to(self.device).detach()
     
     def evaluate(self, eval_dataloader):
+        """
+        Evaluates the given batch and returns the corresponding loss
+
+        Parameters
+        ----------
+        - eval_dataloader : torch.utils.data.DataLoader
+            The data loader to be evaluated
+        
+        Returns
+        -------
+        - loss : float
+            The average loss on the input data
+        """
         self.eval()
         losses = []
         with torch.no_grad():
@@ -173,13 +258,26 @@ class NextWordPredictorModel(torch.nn.Module):
                 outputs = torch.transpose(outputs, 1,2)
                 labels = batch[:,1:]
                 
-                loss = self.criterion(outputs, labels) + self.regularizer()
+                loss = self.criterion(outputs, labels) #+ self.regularizer() / len(batch)
                 
                 losses.append(loss.item())
                 
         return np.mean(losses)
         
     def epoch_step(self, data_loader):
+        """
+        Performs a full run thorugh the data_loader.
+
+        Parameters
+        ----------
+        - data_loader : torch.utils.data.DataLoader
+            The data_loader to train the model with for 1 epoch
+
+        Returns
+        -------
+        - losses : list
+            The list of training losses for all batches
+        """
         self.train()
         losses = []
         
@@ -192,7 +290,7 @@ class NextWordPredictorModel(torch.nn.Module):
             labels = batch[:,1:]
             
             loss = self.criterion(outputs, labels)
-            loss = loss + self.regularizer()
+            loss = loss + self.regularizer() / len(batch)
             
             if self.fp16:
                 with amp.scale_loss(loss, self.optimizer) as scaled_loss:
@@ -210,6 +308,26 @@ class NextWordPredictorModel(torch.nn.Module):
         return losses
     
     def update_early_stopping(self, current_metric, epoch, path = None):
+        """
+        Given a metric and an epoch, determines whether the model should stop early. It
+        also uses the self.best_metric, self.best_epoch, self.early_stopping_count and
+        self.early_stopping_patience to make the decision: if the metric doesn't improve
+        for self.early_stopping_patience epochs, the model saved at the best eposh is loaded
+        and the function returns 0.
+
+        Parameters
+        ----------
+        - current_metric : float
+            The value of the metric at this epoch
+        - epoch : int
+            The current epoch
+        - path : str
+            where to load/save the model
+
+        Returns
+        -------
+        - 0 if should stop and 1 otherwise.
+        """
         if self.early_stopping_metric_best == 'min':
             is_better = self.best_metric > current_metric
         else:
@@ -234,6 +352,18 @@ class NextWordPredictorModel(torch.nn.Module):
             return 0
     
     def count_params(self, only_trainable = True):
+        """
+        Counts the number of parameters of the model
+
+        Parameters
+        ----------
+        - only_trainable : bool
+            Whether to count only the trainable paramters or all
+
+        Returns
+        -------
+        - dict containing the layers and their paramter number
+        """
         return {
             'total_params' : sum(p.numel() for p in self.parameters() if (p.requires_grad or not only_trainable)),
             'embeddings_params' : sum(p.numel() for p in self.embedding_layer.parameters() if (p.requires_grad or not only_trainable)),
@@ -245,29 +375,41 @@ class NextWordPredictorModel(torch.nn.Module):
         for p in self.embedding_layer.parameters():
             p.requires_grad = False
 
-    def unfreeze_embeddigns(self):
+    def unfreeze_embeddings(self):
         for p in self.embedding_layer.parameters():
             p.requires_grad = True
 
     def regularizer(self):
-        reg = torch.FloatTensor([0]).to(self.device)
-        reg.requires_grad = True
-        if self.regularizer_type == 'uniform':
-            for W in self.parameters():
-                if W.requires_grad:
-                    reg = reg + torch.pow(W, self.p).sum()
-        elif self.regularizer_type == 'progressive':
-            pass
-        return 1/self.p * self.lambda_ * reg
+        """
+        Computes the regularizer on all the non bias and trainable parameters.
+        $\frac{1}{p} \lambda \sum_w w^p$
 
+        Returns
+        -------
+        - the computed regularizer
+        """
+        reg = torch.FloatTensor([0]).to(self.device)
+        if self.lambda_ == 0:
+            return reg
+        else:
+            reg.requires_grad = True
+            if self.regularizer_type == 'uniform':
+                for name, W in self.named_parameters():
+                    if W.requires_grad and 'bias' not in name:
+                        reg = reg + torch.pow(W, self.p).sum()
+            elif self.regularizer_type == 'progressive':
+                pass
+            return 1/self.p * self.lambda_ * reg
 
     def fit(
         self, 
         train_dataloader,
         eval_dataloader,
         num_epochs = 30,
+        fp16 : bool = False,
         regularizer = 'uniform',
         p = 2,
+        lambda_ : float = 1e-3,
         eval_epoch_0 : bool =  True,
         early_stopping = True,
         early_stopping_patience = 3,
@@ -276,10 +418,51 @@ class NextWordPredictorModel(torch.nn.Module):
         load_best = True,
         model_path = 'models/'
     ):
+        """
+        Trains the model with the train_dataloader and evaluates with the eval_dataloader.
+
+        Parameters
+        ----------
+        - train_dataloader : torch.utils.data.DataLoader
+            The data loader to train with
+        - eval_dataloader : torch.utils.data.DataLoader
+            The data to evaluate with
+        - num_epoch : int
+            The maxium number of epochs
+        - fp16 : bool
+            Whether mixed precision is used for training
+        - regularizer : str
+            The type of reguirizer to use. Can be None, 'uniform' or 'pregressive'
+        - p : int
+            The norm to use for regularization
+        - lambda_ : float
+            The weight of the regularizer
+        - eval_epoch_0 : bool
+            Whether to evaluate the dataloaders at epoch 0
+        - early_stopping : bool
+            Whether to use early stopping or not
+        - early_stopping_patience : int
+            How many epochs to wait before early stopping
+        - early_stopping_metric : str
+            Which metrics use as early stoppinf criterion
+        - early_stopping_metric_best : str
+            Can be either 'min' or 'max'.
+        - load_best : bool
+            Whether to load the model at the mest metric at the end
+        - model_path : str
+            Where to save/load the model
+
+        Returns
+        -------
+        - metrics : dict
+            A dictionary containing the train, eval losses and the lr at every epoch.
+        """
         self.model_path = model_path
         self.regularizer_type = regularizer
         self.p = p
-        self.lambda_ = 1e-4
+        self.lambda_ = lambda_
+        self.fp16 = fp16
+
         if early_stopping:
             self.early_stopping_patience = early_stopping_patience
             self.early_stopping_metric_best = early_stopping_metric_best
@@ -310,3 +493,149 @@ class NextWordPredictorModel(torch.nn.Module):
                     break
                     
         return metrics
+
+
+
+class Pipeline():
+    def __init__(
+        self,
+        config_file : str
+    ):
+        with open(config_file, 'r') as f:
+            self.parameters = json.load(f)
+
+        torch.manual_seed(self.parameters['TORCH_SEED'])
+        np.random.seed(self.parameters['NUMPY_SEED'])
+
+        data_parameters = self.parameters['DATA_PARAMETERS']
+        data_parameters['device'] = self.parameters['DEVICE']
+        self.init_data(**data_parameters)
+
+        model_parameters = self.parameters['MODEL_PARAMETERS']
+        model_parameters['device'] = self.parameters['DEVICE']
+        model_parameters['vocab_size'] = self.vocabulary.get_vocab_size()
+        self.init_model(**model_parameters)
+
+        
+
+    def init_data(self, **params):
+        if params['data_name'] == 'torch_wiki':
+            train_iter = WikiText2(split='train')
+            tokenizer = get_tokenizer('basic_english')
+
+            train_text = ' '.join(train_iter)
+            self.vocabulary = FromRawTextVocabulary(
+                max_voc_size = params['max_voc_size'],
+                min_word_occ = params['min_word_occ'],
+                text = train_text,
+                tokenizer = tokenizer,
+                text_cleaner = None
+            )
+            train_iter, val_iter, test_iter = WikiText2()
+
+            train_text = ' '.join(train_iter)
+            val_text = ' '.join(val_iter)
+            test_text = ' '.join(test_iter)
+
+            self.train_dataset = SequenceDataset(
+                vocabulary = self.vocabulary,
+                text = train_text,
+                min_seq_length = params['min_seq_length'],
+                max_seq_length = params['max_seq_length'],
+                device = params['device'],
+            )
+            self.val_dataset = SequenceDataset(
+                vocabulary = self.vocabulary,
+                text = val_text,
+                min_seq_length = params['min_seq_length'],
+                max_seq_length = params['max_seq_length'],
+                device = params['device'],
+            )
+            self.test_dataset = SequenceDataset(
+                vocabulary = self.vocabulary,
+                text = test_text,
+                min_seq_length = params['min_seq_length'],
+                max_seq_length = params['max_seq_length'],
+                device = params['device'],
+            )
+
+            del train_text
+            del val_text
+            del test_text
+
+            gc.collect()
+        else:
+            pass
+
+    def init_model(self, **params):
+        def map_weights(weights, m_ = 0.01, M_ = 1):
+            weights = 1 / weights
+            M, m = max(weights), min(weights)
+            return (np.array(weights) - m) * (M_ - m_) / (M - m) + m_
+
+        device = params['device']
+        fp16 = params.pop('fp16')
+        opt = params.pop('opt')
+        lr = params.pop('LEARNING_RATE')
+
+        if params['weight']:
+            params['weight'] = map_weights(np.array(list(self.vocabulary.vocab.values())))
+        else:
+            params['weight'] = None
+
+        self.model = NextWordPredictorModel(**params).to(device)
+        # need to setup the optimizer there because of the amp initialization
+        if opt == 'ADAM':
+            self.model.optimizer = torch.optim.Adam(self.model.parameters(), lr = lr)
+        else:
+            self.model.optimizer = torch.optim.SGD(self.model.parameters(), lr = lr)
+
+
+        if fp16:
+            self.model, self.model.optimizer = amp.initialize(
+                self.model,
+                self.model.optimizer,
+                opt_level = 'O1' # https://nvidia.github.io/apex/amp.html
+            )
+
+        self.model.scheduler = torch.optim.lr_scheduler.StepLR(
+            self.model.optimizer,
+            1.0, 
+            gamma=0.97
+        )
+
+    def train_model(self):
+        training_parameters = self.parameters['TRAINING_PARAMETERS']
+        batch_size = training_parameters.pop("batch_size")
+
+        train_dataloader = torch.utils.data.DataLoader(
+            self.train_dataset,
+            batch_size = batch_size,
+            shuffle = True,
+            pin_memory = False,
+            drop_last = True
+        )
+        val_dataloader = torch.utils.data.DataLoader(
+            self.val_dataset,
+            batch_size = batch_size,
+            shuffle = False,
+            pin_memory = False,
+            drop_last = True
+        )
+
+        
+        self.model.fit(
+            **training_parameters,
+            train_dataloader=train_dataloader,
+            eval_dataloader=val_dataloader
+        )
+
+    def evaluate(self):
+        test_dataloader = torch.utils.data.DataLoader(
+            self.test_dataset,
+            batch_size = 2,
+            shuffle = False,
+            pin_memory = False,
+            drop_last = True
+        )
+        return self.model.evaluate(test_dataloader)
