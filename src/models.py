@@ -7,6 +7,8 @@ from src.data_processing import FromRawTextVocabulary, SequenceDataset
 
 from tqdm import tqdm
 import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
 
 from apex import amp
 import torch
@@ -495,7 +497,6 @@ class NextWordPredictorModel(torch.nn.Module):
         return metrics
 
 
-
 class Pipeline():
     def __init__(
         self,
@@ -624,11 +625,18 @@ class Pipeline():
         )
 
         
-        self.model.fit(
+        metrics = self.model.fit(
             **training_parameters,
             train_dataloader=train_dataloader,
             eval_dataloader=val_dataloader
         )
+
+        df = pd.DataFrame(metrics).T
+        plt.figure()
+        plt.plot(df['train_loss'])
+        plt.plot(df['val_loss'])
+        plt.legend(['train_loss', 'val_loss'])
+        plt.show()
 
     def evaluate(self):
         test_dataloader = torch.utils.data.DataLoader(
@@ -639,3 +647,24 @@ class Pipeline():
             drop_last = True
         )
         return self.model.evaluate(test_dataloader)
+
+
+    def generate(self, start_text : str, num_words = 100):
+        start_text = self.vocabulary.text_cleaner(start_text)
+        tokens = [self.train_dataset.get_idx(w) for w in start_text.split(' ')]
+        self.model.eval()
+        with torch.no_grad():
+            s = torch.nn.Softmax(dim = 0)
+            for i in range(num_words):
+                hidden = self.model.init_hidden(1)
+                x = torch.tensor([tokens]).to(self.model.device)
+                logits, _ = self.model(x, hidden)
+                logits = logits[0][-1]
+                p = s(logits).cpu().numpy()
+                word_index = np.random.choice(logits.shape[0], p = p)
+                tokens.append(word_index)
+
+        return ' '.join([self.vocabulary.idx_to_word[i] for i in tokens])
+
+
+            
