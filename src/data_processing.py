@@ -1,6 +1,14 @@
 import re
+import gc
+import os
+import logging
+import pickle
+import sys
+import json
 from typing import List, Union
 
+from tqdm import tqdm
+import pandas as pd
 import numpy as np
 import nltk
 import torch
@@ -38,21 +46,14 @@ class Vocabulary():
         self.min_word_occ = min_word_occ
         self.max_voc_size = max_voc_size
 
-    def build_vocab(self, text):
-        text = self.text_cleaner(text)
-        vocab = {}
-        for token in self.tokenizer(text):
-            if token in vocab.keys():
-                vocab[token] += 1
-            else:
-                vocab[token] = 1
-
+    def build_vocab(self, vocab):
         # sort voc and remove words not occuring enough
         self.vocab = {
             k: v 
             for (k, v) in sorted(vocab.items(), key=lambda item: -item[1])
             if v >= self.min_word_occ
         }
+        print('vocabulary sorted')
         # keep only top words
         self.vocab = {
             k : v for i, (k,v) in enumerate(self.vocab.items()) if i < (self.max_voc_size - 2)
@@ -65,6 +66,7 @@ class Vocabulary():
         self.vocab[self.unknown_token] = 1
         self.idx_to_word = {v : k for k, v in self.word_to_idx.items()}
 
+        print('vocabulary built')
     def get_vocab_size(self):
         return len(self.word_to_idx)
 
@@ -75,7 +77,15 @@ class FromRawTextVocabulary(Vocabulary):
         **kwargs
     ):
         super(FromRawTextVocabulary, self).__init__(**kwargs)
-        self.build_vocab(text)
+        text = self.text_cleaner(text)
+        tokens = self.tokenizer(text)
+        vocab = {}
+        for token in tokens:
+            if token in vocab.keys():
+                vocab[token] += 1
+            else:
+                vocab[token] = 1
+        self.build_vocab(vocab)
 
 class FromTweetsVocabulary(Vocabulary):
     def __init__(
@@ -84,7 +94,16 @@ class FromTweetsVocabulary(Vocabulary):
         **kwargs
     ):
         super(FromTweetsVocabulary, self).__init__(**kwargs)
-        self.build_vocab(tweets)
+        vocab = {}
+        for tweet in tqdm(tweets):
+            for token in self.tokenizer(tweet):
+                if token.isalpha():
+                    if token in vocab.keys():
+                        vocab[token] += 1
+                    else:
+                        vocab[token] = 1
+        self.build_vocab(vocab)
+        
 
 class SequenceDataset(torch.utils.data.Dataset):
     def __init__(
@@ -110,7 +129,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         
         tokens = [
             [self.get_idx(w) for w in vocabulary.tokenizer(vocabulary.text_cleaner(sentence))]
-            for sentence in text
+            for sentence in tqdm(text)
         ]
         self.tokens = np.concatenate([
             self.pad_and_truncate(sequence) 
@@ -140,3 +159,108 @@ class SequenceDataset(torch.utils.data.Dataset):
         
     def __len__(self):
         return len(self.tokens)
+
+def prepare_data(
+    N_USERS = 1000,
+    data_path = 'data',
+    id_ = 2,
+    val_split = 0.2,
+    test_split = 0.2,
+    SEED = 23
+):
+    tweets_file = f'tweets_{id_}.csv'
+    users_file = f'users_{id_}.csv'
+
+    user_tweets_file = f'users_tweets_{id_}.csv'
+
+    train_set_file = f'train_{id_}.pickle'
+    val_set_file = f'val_{id_}.pickle'
+    test_set_file = f'test_{id_}.pickle'
+    
+    data_files = os.listdir(data_path)
+    if (train_set_file not in data_files or \
+        val_set_file not in data_files or \
+        test_set_file not in data_files or \
+        user_tweets_file not in data_files
+    ):
+        if (tweets_file not in data_files) or (users_file not in data_files):
+            logging.error(f'Neither parsed nor raw data was found in the {data_path} directory')
+            print(tweets_file)
+            print(users_file)
+            print(data_files)
+        else:
+            tweets_2 = pd.read_csv(os.path.join(data_path, tweets_file))
+            lengths = tweets_2['body'].map(len)
+            tweets_2 = tweets_2[lengths.map(lambda x : 10 < x and x <= 140)]
+            tweets_2 = tweets_2[tweets_2['lang'] == 'en']
+
+            users = tweets_2['author_id'].value_counts()[:N_USERS]
+            users_tweets = tweets_2[tweets_2['author_id'].map(lambda x : x in users.index)]
+            users_2 = pd.read_csv(os.path.join(data_path, users_file))
+            users_2 = users_2.drop('user_screename', axis = 1).set_index('user_id').groupby('user_id').first()
+            users_tweets = users_tweets.rename({'author_id' : 'user_id'}, axis = 1).set_index('user_id').join(users_2, how = 'left')
+
+            users_tweets.to_csv(os.path.join(data_path, user_tweets_file))
+            logging.info('generated users data')
+            del users_2
+            del users_tweets
+            gc.collect()
+
+            np.random.seed(SEED)
+
+            LM_tweets = tweets_2[tweets_2['author_id'].map(lambda x : x not in users.index)].set_index('author_id')
+            del tweets_2
+            gc.collect()
+            LM_tweets_users = list(LM_tweets.index.unique())
+            np.random.shuffle(LM_tweets_users)
+
+            n_users = len(LM_tweets_users)
+            test_users = LM_tweets_users[:int(test_split * n_users)]
+            val_users = LM_tweets_users[int(test_split * n_users):int((test_split + val_split) * n_users)]
+            train_users = LM_tweets_users[int((test_split + val_split) * n_users):]
+
+            assert n_users == len(test_users) + len(val_users) + len(train_users)
+
+            test_set = list(LM_tweets.loc[test_users]['body'])
+            val_set = list(LM_tweets.loc[val_users]['body'])
+            train_set = list(LM_tweets.loc[train_users]['body'])
+
+            assert len(LM_tweets) == len(test_set) + len(val_set) + len(train_set)
+
+            with open(os.path.join(data_path, train_set_file), 'wb') as f:
+                pickle.dump(train_set, f)
+            with open(os.path.join(data_path, val_set_file), 'wb') as f:
+                pickle.dump(val_set, f)
+            with open(os.path.join(data_path, test_set_file), 'wb') as f:
+                pickle.dump(test_set, f)
+            
+            logging.info(f'generated train-val-test sets for id {id_}')
+            logging.info(f"""
+                trainining set : {len(train_set)} tweets for {len(train_users)} users
+                validation set : {len(val_set)} tweets for {len(val_users)} users
+                test set       : {len(test_set)} tweets for {len(test_users)} users
+            """)
+
+if __name__ == '__main__':
+
+    logging.basicConfig(filename='logs/logs.log', level=logging.DEBUG)
+
+    if len(sys.argv) != 2:
+        raise AssertionError("""required 1 argument: the data id""")
+    id_ = sys.argv[1]
+
+    with open('CONFIG_FEDERATED.json', 'r') as f:
+        federated_parameters = json.load(f)
+    with open('CONFIG_MODEL.json', 'r') as f:
+        model_parameters = json.load(f)
+
+    data_parameters = model_parameters['DATA_PARAMETERS']
+
+    prepare_data(
+        N_USERS = federated_parameters['num_nodes'],
+        data_path = data_parameters['data_folder'],
+        id_ = id_,
+        val_split = data_parameters['val_split'],
+        test_split = data_parameters['test_split'],
+        SEED = model_parameters['NUMPY_SEED']
+    )

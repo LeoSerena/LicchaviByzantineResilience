@@ -5,11 +5,15 @@
     "NUMPY_SEED" : 23,
 
     "DATA_PARAMETERS" : {
-        "data_name" : "torch_wiki",
+        "data_name" : "tweets",
+        "data_folder" : "data",
+        "data_file" : "tweets",
+        "vocab_file" : "vocab.pickle",
+        "vocab_from_scratch" : 0,
         "max_voc_size" : 10000,
         "min_word_occ" : 10,
         "val_split" : 0.2,
-        "test_split" : 0.1,
+        "test_split" : 0.2,
         "max_seq_length" : 20,
         "min_seq_length" : 2
     },

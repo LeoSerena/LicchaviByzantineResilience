@@ -1,5 +1,6 @@
 import json
 import os
+import logging
 
 from src.models import Pipeline
 from src.utils import make_dir_if_not_exists
@@ -78,3 +79,10 @@ class Federated():
         for node_id in range(1, self.num_nodes+1):
             if epoch == 0:
                 pass
+
+
+
+
+if __name__ == '__main__':
+    logging.basicConfig(filename = 'federated.log', encoding = 'utf-8', level=logging.DEBUG)
+    pass

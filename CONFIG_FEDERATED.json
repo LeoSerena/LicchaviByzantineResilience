@@ -4,7 +4,7 @@
     "rnn_folder" : "rnn",
     "linear_folder" : "linear",
 
-    "num_nodes" : 2,
+    "num_nodes" : 1000,
     "lambda_0" : 1e-3,
     "lambda_n" : "uniform"
 

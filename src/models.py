@@ -2,13 +2,17 @@ import os
 import math
 import json
 import gc
+import logging
+import pickle
+import sys
 
-from src.data_processing import FromRawTextVocabulary, SequenceDataset
+from src.data_processing import FromRawTextVocabulary, FromTweetsVocabulary, SequenceDataset
 
 from tqdm import tqdm
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
+from nltk.tokenize import TweetTokenizer
 
 from apex import amp
 import torch
@@ -560,13 +564,76 @@ class Pipeline():
                 device = params['device'],
             )
 
-            del train_text
-            del val_text
-            del test_text
+        elif params['data_name'] == 'tweets':
+            id_ = 2
+            data_folder = params['data_folder']
 
-            gc.collect()
+            train_set_file = os.path.join(data_folder, f'train_{id_}.pickle')
+            val_set_file = os.path.join(data_folder, f'val_{id_}.pickle')
+            test_set_file = os.path.join(data_folder, f'test_{id_}.pickle')
+
+            tokenizer = TweetTokenizer(
+                preserve_case = False,
+                strip_handles = True, #removes things like: @bob ...,
+                reduce_len = True #more than 3 times same characters are limited waaaaayyyy -> waaayyy
+            ).tokenize
+
+            with open(train_set_file, 'rb') as f:
+                train_set = pickle.load(f)
+            print('training set loaded')
+            if params['vocab_from_scratch']:
+                logging.info('generating vocabulary...')
+                self.vocabulary = FromTweetsVocabulary(
+                    max_voc_size = params['max_voc_size'],
+                    min_word_occ = params['min_word_occ'],
+                    tweets = train_set,
+                    tokenizer = tokenizer,
+                    text_cleaner = None
+                )
+                logging.info('vocabulary generated')
+                with open(params['vocab_file'], 'wb') as f:
+                    pickle.dump(self.vocabulary, f)
+            else:
+                try:
+                    with open(params['vocab_file'], 'rb') as f:
+                        self.vocabulary = pickle.load(f)
+                    logging.info('vocabulary loaded')
+                except FileNotFoundError:
+                    logging.error("vocabulary file not found")
+                    sys.exit(1)
+
+
+            self.train_dataset = SequenceDataset(
+                vocabulary = self.vocabulary,
+                text = train_set[:2000000],
+                min_seq_length = params['min_seq_length'],
+                max_seq_length = params['max_seq_length'],
+                device = params['device'],
+            )
+            with open(val_set_file, 'rb') as f:
+                val_set = pickle.load(f)
+            print('validation set loaded')
+            self.val_dataset = SequenceDataset(
+                vocabulary = self.vocabulary,
+                text = val_set[:400000],
+                min_seq_length = params['min_seq_length'],
+                max_seq_length = params['max_seq_length'],
+                device = params['device'],
+            )
+            with open(test_set_file, 'rb') as f:
+                test_set = pickle.load(f)
+            print('test set loaded')
+            self.test_dataset = SequenceDataset(
+                vocabulary = self.vocabulary,
+                text = test_set[:400000],
+                min_seq_length = params['min_seq_length'],
+                max_seq_length = params['max_seq_length'],
+                device = params['device'],
+            )
         else:
-            pass
+            raise AssertionError('data argument not allowed')
+
+        gc.collect()
 
     def init_model(self, **params):
         def map_weights(weights, m_ = 0.01, M_ = 1):
