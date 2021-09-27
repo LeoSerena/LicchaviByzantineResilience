@@ -6,6 +6,8 @@ import logging
 import pickle
 import sys
 
+from spacy import load
+
 from src.data_processing import FromRawTextVocabulary, FromTweetsVocabulary, SequenceDataset
 
 from tqdm import tqdm
@@ -213,10 +215,13 @@ class NextWordPredictorModel(torch.nn.Module):
         if path is not None:
             self.load_state_dict(torch.load(path), strict = False)
         else:
-            if hasattr(self, 'model_path'):
-                self.load_state_dict(torch.load(os.path.join(self.model_path, 'model.pth')))
-            else:
-                print('No path given, please enter a path to load the model.')
+            try:
+                self.load_state_dict(torch.load(os.path.join('models', 'model.pth')))
+            except FileNotFoundError:
+                if hasattr(self, 'model_path'):
+                    self.load_state_dict(torch.load(os.path.join(self.model_path, 'model.pth')))
+                else:
+                    print('No path given, please enter a path to load the model.')
     
     def init_hidden(self, batch_size):
         """
@@ -504,10 +509,12 @@ class NextWordPredictorModel(torch.nn.Module):
 class Pipeline():
     def __init__(
         self,
-        config_file : str
+        config_file : str,
+        load_model_data : bool = False
     ):
         with open(config_file, 'r') as f:
             self.parameters = json.load(f)
+        self.load_model_data = load_model_data
 
         torch.manual_seed(self.parameters['TORCH_SEED'])
         np.random.seed(self.parameters['NUMPY_SEED'])
@@ -580,7 +587,6 @@ class Pipeline():
 
             with open(train_set_file, 'rb') as f:
                 train_set = pickle.load(f)
-            print('training set loaded')
             if params['vocab_from_scratch']:
                 logging.info('generating vocabulary...')
                 self.vocabulary = FromTweetsVocabulary(
@@ -602,34 +608,32 @@ class Pipeline():
                     logging.error("vocabulary file not found")
                     sys.exit(1)
 
-
-            self.train_dataset = SequenceDataset(
-                vocabulary = self.vocabulary,
-                text = train_set[:2000000],
-                min_seq_length = params['min_seq_length'],
-                max_seq_length = params['max_seq_length'],
-                device = params['device'],
-            )
-            with open(val_set_file, 'rb') as f:
-                val_set = pickle.load(f)
-            print('validation set loaded')
-            self.val_dataset = SequenceDataset(
-                vocabulary = self.vocabulary,
-                text = val_set[:400000],
-                min_seq_length = params['min_seq_length'],
-                max_seq_length = params['max_seq_length'],
-                device = params['device'],
-            )
-            with open(test_set_file, 'rb') as f:
-                test_set = pickle.load(f)
-            print('test set loaded')
-            self.test_dataset = SequenceDataset(
-                vocabulary = self.vocabulary,
-                text = test_set[:400000],
-                min_seq_length = params['min_seq_length'],
-                max_seq_length = params['max_seq_length'],
-                device = params['device'],
-            )
+            if self.load_model_data:
+                self.train_dataset = SequenceDataset(
+                    vocabulary = self.vocabulary,
+                    text = train_set,
+                    min_seq_length = params['min_seq_length'],
+                    max_seq_length = params['max_seq_length'],
+                    device = params['device'],
+                )
+                with open(val_set_file, 'rb') as f:
+                    val_set = pickle.load(f)
+                self.val_dataset = SequenceDataset(
+                    vocabulary = self.vocabulary,
+                    text = val_set,
+                    min_seq_length = params['min_seq_length'],
+                    max_seq_length = params['max_seq_length'],
+                    device = params['device'],
+                )
+                with open(test_set_file, 'rb') as f:
+                    test_set = pickle.load(f)
+                self.test_dataset = SequenceDataset(
+                    vocabulary = self.vocabulary,
+                    text = test_set,
+                    min_seq_length = params['min_seq_length'],
+                    max_seq_length = params['max_seq_length'],
+                    device = params['device'],
+                )
         else:
             raise AssertionError('data argument not allowed')
 
@@ -718,7 +722,7 @@ class Pipeline():
 
     def generate(self, start_text : str, num_words = 100):
         start_text = self.vocabulary.text_cleaner(start_text)
-        tokens = [self.train_dataset.get_idx(w) for w in start_text.split(' ')]
+        tokens = [self.vocabulary.word_to_idx[w] if w in self.vocabulary.word_to_idx.keys() else 0 for w in start_text.split(' ')]
         self.model.eval()
         with torch.no_grad():
             s = torch.nn.Softmax(dim = 0)
@@ -734,4 +738,5 @@ class Pipeline():
         return ' '.join([self.vocabulary.idx_to_word[i] for i in tokens])
 
 
-            
+    def load_model(self, path = None):
+        self.model.load_model(path = path)

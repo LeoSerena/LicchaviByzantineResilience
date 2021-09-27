@@ -1,11 +1,20 @@
 {
+    "DEVICE" : "cuda:0",
+    "max_seq_length" : 20,
+    "min_seq_length" : 2,
+
     "model_dir" : "federated_models",
     "embeddings_folder" : "embeddings",
     "rnn_folder" : "rnn",
     "linear_folder" : "linear",
 
     "num_nodes" : 1000,
+    "num_training_nodes" : 10,
+    "num_byzantine" : 0,
+    "byzantine_type" : "random",
+    "data_sparsity" : "normal",
     "lambda_0" : 1e-3,
-    "lambda_n" : "uniform"
+    "lambda_n" : "uniform",
+    "nodes_data_folder" : "nodes_data"
 
 }

@@ -1,3 +1,4 @@
+from abc import abstractclassmethod
 import re
 import gc
 import os
@@ -29,8 +30,13 @@ class Vocabulary():
         max_voc_size : int = 20000,
         min_word_occ : int = 2
     ):
-        if self.__class__ == 'Vocabulary':
-            raise NotImplementedError("""This is an abstract class""")
+        if self.__class__ == Vocabulary:
+            raise NotImplementedError(
+        """
+        This is an abstract class.
+        To instanciate a Vocabulary, use the FromRawTextVocabulary 
+        or the FromTweetsVocabulary class
+        """)
         
         if tokenizer is not None:
             self.tokenizer = tokenizer
@@ -166,7 +172,8 @@ def prepare_data(
     id_ = 2,
     val_split = 0.2,
     test_split = 0.2,
-    SEED = 23
+    SEED = 23,
+    nodes_data_folder = 'nodes_data'
 ):
     tweets_file = f'tweets_{id_}.csv'
     users_file = f'users_{id_}.csv'
@@ -180,8 +187,7 @@ def prepare_data(
     data_files = os.listdir(data_path)
     if (train_set_file not in data_files or \
         val_set_file not in data_files or \
-        test_set_file not in data_files or \
-        user_tweets_file not in data_files
+        test_set_file not in data_files
     ):
         if (tweets_file not in data_files) or (users_file not in data_files):
             logging.error(f'Neither parsed nor raw data was found in the {data_path} directory')
@@ -190,19 +196,19 @@ def prepare_data(
             print(data_files)
         else:
             tweets_2 = pd.read_csv(os.path.join(data_path, tweets_file))
-            lengths = tweets_2['body'].map(len)
-            tweets_2 = tweets_2[lengths.map(lambda x : 10 < x and x <= 140)]
             tweets_2 = tweets_2[tweets_2['lang'] == 'en']
+            lengths = tweets_2['body'].map(len)
+            tweets_2 = tweets_2[lengths.map(lambda x : 20 < x and x <= 140)]
 
             users = tweets_2['author_id'].value_counts()[:N_USERS]
             users_tweets = tweets_2[tweets_2['author_id'].map(lambda x : x in users.index)]
-            users_2 = pd.read_csv(os.path.join(data_path, users_file))
-            users_2 = users_2.drop('user_screename', axis = 1).set_index('user_id').groupby('user_id').first()
-            users_tweets = users_tweets.rename({'author_id' : 'user_id'}, axis = 1).set_index('user_id').join(users_2, how = 'left')
-
+            i = 1
+            for (user_id, screename), user_tweets in users_tweets.groupby(['author_id', 'author_screen_name']):
+                with open(os.path.join(nodes_data_folder, f"node_{i}_{user_id}_{screename}.pickle"), 'wb') as f:
+                    pickle.dump(list(user_tweets['body']), f)
+                i+=1
             users_tweets.to_csv(os.path.join(data_path, user_tweets_file))
             logging.info('generated users data')
-            del users_2
             del users_tweets
             gc.collect()
 
@@ -241,6 +247,9 @@ def prepare_data(
                 test set       : {len(test_set)} tweets for {len(test_users)} users
             """)
 
+    else:
+        logging.info('data was already found')
+
 if __name__ == '__main__':
 
     logging.basicConfig(filename='logs/logs.log', level=logging.DEBUG)
@@ -262,5 +271,6 @@ if __name__ == '__main__':
         id_ = id_,
         val_split = data_parameters['val_split'],
         test_split = data_parameters['test_split'],
-        SEED = model_parameters['NUMPY_SEED']
+        SEED = model_parameters['NUMPY_SEED'],
+        nodes_data_folder = federated_parameters['nodes_data_folder']
     )
