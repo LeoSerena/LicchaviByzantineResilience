@@ -19,8 +19,7 @@ from nltk.tokenize import TweetTokenizer
 from apex import amp
 import torch
 from torch import Tensor
-from torchtext.datasets import WikiText2
-from torchtext.data.utils import get_tokenizer
+
 
 class PositionalEncoding(torch.nn.Module):
     def __init__(
@@ -71,7 +70,7 @@ class NextWordPredictorModel(torch.nn.Module):
         dropout : float,
         device : str,
         weight : list = None,
-        positional_encoding : bool = True
+        positional_encoding : bool = False
     ):
         """
         Torch.nn.MModule for next word prediction using RNNs.
@@ -275,7 +274,7 @@ class NextWordPredictorModel(torch.nn.Module):
                 
         return np.mean(losses)
         
-    def epoch_step(self, data_loader):
+    def epoch_step(self, data_loader, node):
         """
         Performs a full run thorugh the data_loader.
 
@@ -301,7 +300,7 @@ class NextWordPredictorModel(torch.nn.Module):
             labels = batch[:,1:]
             
             loss = self.criterion(outputs, labels)
-            loss = loss + self.regularizer() / len(batch)
+            loss = loss + self.regularizer(self, node) / len(batch)
             
             if self.fp16:
                 with amp.scale_loss(loss, self.optimizer) as scaled_loss:
@@ -505,6 +504,44 @@ class NextWordPredictorModel(torch.nn.Module):
                     
         return metrics
 
+def init_model(vocabulary, **params):
+    def map_weights(weights, m_ = 0.01, M_ = 1):
+        weights = 1 / weights
+        M, m = max(weights), min(weights)
+        return (np.array(weights) - m) * (M_ - m_) / (M - m) + m_
+
+    device = params['device']
+    fp16 = params.pop('fp16')
+    opt = params.pop('opt')
+    lr = params.pop('LEARNING_RATE')
+
+    if params['weight'] and vocabulary is not None:
+        params['weight'] = map_weights(np.array(list(vocabulary.vocab.values())))
+    else:
+        params['weight'] = None
+
+    model = NextWordPredictorModel(**params).to(device)
+    # need to setup the optimizer there because of the amp initialization
+    if opt == 'ADAM':
+        model.optimizer = torch.optim.Adam(model.parameters(), lr = lr)
+    else:
+        model.optimizer = torch.optim.SGD(model.parameters(), lr = lr)
+
+
+    if fp16:
+        model, model.optimizer = amp.initialize(
+            model,
+            model.optimizer,
+            opt_level = 'O1' # https://nvidia.github.io/apex/amp.html
+        )
+
+    model.scheduler = torch.optim.lr_scheduler.StepLR(
+        model.optimizer,
+        1.0, 
+        gamma=0.97
+    )
+    return model
+
 
 class Pipeline():
     def __init__(
@@ -526,12 +563,14 @@ class Pipeline():
         model_parameters = self.parameters['MODEL_PARAMETERS']
         model_parameters['device'] = self.parameters['DEVICE']
         model_parameters['vocab_size'] = self.vocabulary.get_vocab_size()
-        self.init_model(**model_parameters)
+        self.model = init_model(self.vocabulary, **model_parameters)
 
         
 
     def init_data(self, **params):
         if params['data_name'] == 'torch_wiki':
+            from torchtext.datasets import WikiText2
+            from torchtext.data.utils import get_tokenizer
             train_iter = WikiText2(split='train')
             tokenizer = get_tokenizer('basic_english')
 
@@ -638,43 +677,6 @@ class Pipeline():
             raise AssertionError('data argument not allowed')
 
         gc.collect()
-
-    def init_model(self, **params):
-        def map_weights(weights, m_ = 0.01, M_ = 1):
-            weights = 1 / weights
-            M, m = max(weights), min(weights)
-            return (np.array(weights) - m) * (M_ - m_) / (M - m) + m_
-
-        device = params['device']
-        fp16 = params.pop('fp16')
-        opt = params.pop('opt')
-        lr = params.pop('LEARNING_RATE')
-
-        if params['weight']:
-            params['weight'] = map_weights(np.array(list(self.vocabulary.vocab.values())))
-        else:
-            params['weight'] = None
-
-        self.model = NextWordPredictorModel(**params).to(device)
-        # need to setup the optimizer there because of the amp initialization
-        if opt == 'ADAM':
-            self.model.optimizer = torch.optim.Adam(self.model.parameters(), lr = lr)
-        else:
-            self.model.optimizer = torch.optim.SGD(self.model.parameters(), lr = lr)
-
-
-        if fp16:
-            self.model, self.model.optimizer = amp.initialize(
-                self.model,
-                self.model.optimizer,
-                opt_level = 'O1' # https://nvidia.github.io/apex/amp.html
-            )
-
-        self.model.scheduler = torch.optim.lr_scheduler.StepLR(
-            self.model.optimizer,
-            1.0, 
-            gamma=0.97
-        )
 
     def train_model(self):
         training_parameters = self.parameters['TRAINING_PARAMETERS']
