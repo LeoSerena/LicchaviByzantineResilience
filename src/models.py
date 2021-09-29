@@ -8,7 +8,8 @@ import sys
 
 from spacy import load
 
-from src.data_processing import FromRawTextVocabulary, FromTweetsVocabulary, SequenceDataset
+from src.data_processing import FromRawTextVocabulary, FromTweetsVocabulary, \
+    Vocabulary, SequenceDataset
 
 from tqdm import tqdm
 import numpy as np
@@ -274,7 +275,7 @@ class NextWordPredictorModel(torch.nn.Module):
                 
         return np.mean(losses)
         
-    def epoch_step(self, data_loader, node):
+    def epoch_step(self, data_loader, node, with_tqdm = True):
         """
         Performs a full run thorugh the data_loader.
 
@@ -290,8 +291,11 @@ class NextWordPredictorModel(torch.nn.Module):
         """
         self.train()
         losses = []
-        
-        for batch in tqdm(data_loader):
+        if with_tqdm:
+            iterator = tqdm(data_loader)
+        else:
+            iterator = data_loader
+        for batch in iterator:
             for param in self.parameters():
                 param.grad = None
             hidden = self.init_hidden(data_loader.batch_size)
@@ -392,7 +396,7 @@ class NextWordPredictorModel(torch.nn.Module):
     def regularizer(self):
         """
         Computes the regularizer on all the non bias and trainable parameters.
-        $\frac{1}{p} \lambda \sum_w w^p$
+        $$\frac{1}{p} \lambda \sum_w w^p$$
 
         Returns
         -------
@@ -403,12 +407,9 @@ class NextWordPredictorModel(torch.nn.Module):
             return reg
         else:
             reg.requires_grad = True
-            if self.regularizer_type == 'uniform':
-                for name, W in self.named_parameters():
-                    if W.requires_grad and 'bias' not in name:
-                        reg = reg + torch.pow(W, self.p).sum()
-            elif self.regularizer_type == 'progressive':
-                pass
+            for name, W in self.named_parameters():
+                if W.requires_grad and 'bias' not in name:
+                    reg = reg + torch.pow(W, self.p).sum()
             return 1/self.p * self.lambda_ * reg
 
     def fit(
@@ -504,7 +505,24 @@ class NextWordPredictorModel(torch.nn.Module):
                     
         return metrics
 
-def init_model(vocabulary, **params):
+    def generate(self, vocabulary : Vocabulary, start_text : str, num_words = 100):
+        start_text = vocabulary.text_cleaner(start_text)
+        tokens = [vocabulary.word_to_idx[w] if w in vocabulary.word_to_idx.keys() else 0 for w in start_text.split(' ')]
+        self.eval()
+        with torch.no_grad():
+            s = torch.nn.Softmax(dim = 0)
+            for i in range(num_words):
+                hidden = self.init_hidden(1)
+                x = torch.tensor([tokens]).to(self.device)
+                logits, _ = self(x, hidden)
+                logits = logits[0][-1]
+                p = s(logits).cpu().numpy()
+                word_index = np.random.choice(logits.shape[0], p = p)
+                tokens.append(word_index)
+
+        return ' '.join([vocabulary.idx_to_word[i] for i in tokens])
+
+def init_model(vocabulary : Vocabulary, **params):
     def map_weights(weights, m_ = 0.01, M_ = 1):
         weights = 1 / weights
         M, m = max(weights), min(weights)
@@ -534,12 +552,14 @@ def init_model(vocabulary, **params):
             model.optimizer,
             opt_level = 'O1' # https://nvidia.github.io/apex/amp.html
         )
+    model.fp16 = fp16
 
     model.scheduler = torch.optim.lr_scheduler.StepLR(
         model.optimizer,
         1.0, 
         gamma=0.97
     )
+    logging.info('model initialized')
     return model
 
 
@@ -549,6 +569,16 @@ class Pipeline():
         config_file : str,
         load_model_data : bool = False
     ):
+        """
+        Pipeline class that trains the language model for next word predictions
+
+        Parameters
+        ----------
+        - config_file : str
+            The path to the json config file with all the parameters
+        - load_model_data : bool
+            Whether to load the train-val-test set
+        """
         with open(config_file, 'r') as f:
             self.parameters = json.load(f)
         self.load_model_data = load_model_data
@@ -565,52 +595,37 @@ class Pipeline():
         model_parameters['vocab_size'] = self.vocabulary.get_vocab_size()
         self.model = init_model(self.vocabulary, **model_parameters)
 
-        
-
     def init_data(self, **params):
-        if params['data_name'] == 'torch_wiki':
-            from torchtext.datasets import WikiText2
-            from torchtext.data.utils import get_tokenizer
-            train_iter = WikiText2(split='train')
-            tokenizer = get_tokenizer('basic_english')
-
-            train_text = ' '.join(train_iter)
-            self.vocabulary = FromRawTextVocabulary(
-                max_voc_size = params['max_voc_size'],
-                min_word_occ = params['min_word_occ'],
-                text = train_text,
-                tokenizer = tokenizer,
-                text_cleaner = None
-            )
-            train_iter, val_iter, test_iter = WikiText2()
-
-            train_text = ' '.join(train_iter)
-            val_text = ' '.join(val_iter)
-            test_text = ' '.join(test_iter)
-
-            self.train_dataset = SequenceDataset(
-                vocabulary = self.vocabulary,
-                text = train_text,
-                min_seq_length = params['min_seq_length'],
-                max_seq_length = params['max_seq_length'],
-                device = params['device'],
-            )
-            self.val_dataset = SequenceDataset(
-                vocabulary = self.vocabulary,
-                text = val_text,
-                min_seq_length = params['min_seq_length'],
-                max_seq_length = params['max_seq_length'],
-                device = params['device'],
-            )
-            self.test_dataset = SequenceDataset(
-                vocabulary = self.vocabulary,
-                text = test_text,
-                min_seq_length = params['min_seq_length'],
-                max_seq_length = params['max_seq_length'],
-                device = params['device'],
-            )
-
-        elif params['data_name'] == 'tweets':
+        """
+        Prepares the train-val-test datasets for next word prediction.
+        
+        Parameters
+        ----------
+        - **params : dict
+            dictionary of arguments. Argument used are:
+            - data_name : str
+                The type of data used. By default is 'tweets'
+            - data_folder : str
+                Where the data is contained
+            - vocab_from_scratch : bool
+                Whether to load the vocabulary or to make it from scratch
+            - max_voc_size : int
+                The maximum voc size
+            - min_word_occ : int
+                Least number of times a word must occur to be in voc
+            - vocab_file : str
+                path to where to load or save the vocabulary (in pickle format)
+            - min_seq_length
+                minimum sequence length
+            - max_seq_length
+                maximum sequence length
+            - device
+                the device where the data is loaded
+        Returns
+        -------
+        void
+        """
+        if params['data_name'] == 'tweets':
             id_ = 2
             data_folder = params['data_folder']
 
@@ -679,6 +694,11 @@ class Pipeline():
         gc.collect()
 
     def train_model(self):
+        """
+        Wrapper of the *.fit* method of the NextWordPredictorModel that first instanciate
+        the train-val torch.utils.data.DataLoader and then trains the model and uses the
+        parameters contained in the self.parameters attribute.
+        """
         training_parameters = self.parameters['TRAINING_PARAMETERS']
         batch_size = training_parameters.pop("batch_size")
 
@@ -721,24 +741,8 @@ class Pipeline():
         )
         return self.model.evaluate(test_dataloader)
 
-
-    def generate(self, start_text : str, num_words = 100):
-        start_text = self.vocabulary.text_cleaner(start_text)
-        tokens = [self.vocabulary.word_to_idx[w] if w in self.vocabulary.word_to_idx.keys() else 0 for w in start_text.split(' ')]
-        self.model.eval()
-        with torch.no_grad():
-            s = torch.nn.Softmax(dim = 0)
-            for i in range(num_words):
-                hidden = self.model.init_hidden(1)
-                x = torch.tensor([tokens]).to(self.model.device)
-                logits, _ = self.model(x, hidden)
-                logits = logits[0][-1]
-                p = s(logits).cpu().numpy()
-                word_index = np.random.choice(logits.shape[0], p = p)
-                tokens.append(word_index)
-
-        return ' '.join([self.vocabulary.idx_to_word[i] for i in tokens])
-
+    def generate(self, start_text : str, vocabulary : Vocabulary, num_words = 100):
+        return self.model.generate(start_text = start_text, vocabulary = vocabulary, num_words = num_words)
 
     def load_model(self, path = None):
         self.model.load_model(path = path)

@@ -13,8 +13,10 @@
     "num_byzantine" : 0,
     "byzantine_type" : "random",
     "data_sparsity" : "normal",
-    "lambda_0" : 1e-3,
-    "lambda_n" : "uniform",
+    "lambda_0" : 0,
+    "p_0" : 2,
+    "p_n" : 1,
+    "lambdas" : "uniform",
+    "lambda_n" : 1e-4,
     "nodes_data_folder" : "nodes_data"
-
 }
