@@ -366,7 +366,7 @@ class Federated():
 
                 node_dataloader = torch.utils.data.DataLoader(
                     node.data,
-                    batch_size = 8,
+                    batch_size = 32,
                     shuffle = True,
                     drop_last = True
                 )

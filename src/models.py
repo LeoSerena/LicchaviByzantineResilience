@@ -311,11 +311,11 @@ class NextWordPredictorModel(torch.nn.Module):
             total_loss = loss + reg_loss
             
             if self.fp16:
-                with amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                with amp.scale_loss(total_loss, self.optimizer) as scaled_loss:
                     scaled_loss.backward()
                 self.optimizer.step()
             else:
-                loss.backward()
+                total_loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.parameters(), 0.5)
                 self.optimizer.step()
                 

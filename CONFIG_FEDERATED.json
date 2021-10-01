@@ -18,6 +18,6 @@
     "p_0" : 2,
     "p_n" : 1,
     "lambdas" : "uniform",
-    "lambda_n" : 1e-4,
+    "lambda_n" : 1e-3,
     "nodes_data_folder" : "nodes_data"
 }
