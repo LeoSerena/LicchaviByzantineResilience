@@ -275,7 +275,7 @@ class NextWordPredictorModel(torch.nn.Module):
                 
         return np.mean(losses)
         
-    def epoch_step(self, data_loader, node, with_tqdm = True):
+    def epoch_step(self, data_loader, node, with_tqdm = True, sep_losses = False):
         """
         Performs a full run thorugh the data_loader.
 
@@ -290,7 +290,10 @@ class NextWordPredictorModel(torch.nn.Module):
             The list of training losses for all batches
         """
         self.train()
-        losses = []
+        if sep_losses:
+            sample_losses = []
+            regularizer_losses = []
+        total_losses = []
         if with_tqdm:
             iterator = tqdm(data_loader)
         else:
@@ -304,7 +307,8 @@ class NextWordPredictorModel(torch.nn.Module):
             labels = batch[:,1:]
             
             loss = self.criterion(outputs, labels)
-            loss = loss + self.regularizer(self, node) / len(batch)
+            reg_loss = self.regularizer(self, node) / len(batch)
+            total_loss = loss + reg_loss
             
             if self.fp16:
                 with amp.scale_loss(loss, self.optimizer) as scaled_loss:
@@ -315,11 +319,17 @@ class NextWordPredictorModel(torch.nn.Module):
                 torch.nn.utils.clip_grad_norm_(self.parameters(), 0.5)
                 self.optimizer.step()
                 
-            losses.append(loss.item())
+            total_losses.append(total_loss.item())
+            if sep_losses:
+                sample_losses.append(loss.item())
+                regularizer_losses.append(reg_loss.item())
         
         self.scheduler.step()
         
-        return losses
+        if sep_losses:
+            return total_losses, sample_losses, regularizer_losses
+        else:   
+            return total_losses
     
     def update_early_stopping(self, current_metric, epoch, path = None):
         """
@@ -403,10 +413,10 @@ class NextWordPredictorModel(torch.nn.Module):
         - the computed regularizer
         """
         reg = torch.FloatTensor([0]).to(self.device)
+        reg.requires_grad = True
         if self.lambda_ == 0:
             return reg
         else:
-            reg.requires_grad = True
             for name, W in self.named_parameters():
                 if W.requires_grad and 'bias' not in name:
                     reg = reg + torch.pow(W, self.p).sum()

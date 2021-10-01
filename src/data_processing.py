@@ -59,7 +59,7 @@ class Vocabulary():
             for (k, v) in sorted(vocab.items(), key=lambda item: -item[1])
             if v >= self.min_word_occ
         }
-        print('vocabulary sorted')
+        logging.info('vocabulary sorted')
         # keep only top words
         self.vocab = {
             k : v for i, (k,v) in enumerate(self.vocab.items()) if i < (self.max_voc_size - 2)
@@ -72,7 +72,8 @@ class Vocabulary():
         self.vocab[self.unknown_token] = 1
         self.idx_to_word = {v : k for k, v in self.word_to_idx.items()}
 
-        print('vocabulary built')
+        logging.info('vocabulary built')
+
     def get_vocab_size(self):
         return len(self.word_to_idx)
 
@@ -135,7 +136,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         
         tokens = [
             [self.get_idx(w) for w in vocabulary.tokenizer(vocabulary.text_cleaner(sentence))]
-            for sentence in tqdm(text)
+            for sentence in text
         ]
         self.tokens = np.concatenate([
             self.pad_and_truncate(sequence) 
