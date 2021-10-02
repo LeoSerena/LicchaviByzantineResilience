@@ -9,12 +9,16 @@
     "linear_folder" : "linear",
     "optim_folder" : "optim",
 
+    "results_folder" : "results",
+    "metrics_results_folder" : "values",
+    "plots_results_folder" : "plots",
+
     "num_nodes" : 1000,
     "num_training_nodes" : 10,
     "num_byzantine" : 2,
     "byzantine_type" : "null",
     "data_sparsity" : "normal",
-    "lambda_0" : 0,
+    "lambda_0" : 1e-5,
     "p_0" : 2,
     "p_n" : 1,
     "lambdas" : "uniform",

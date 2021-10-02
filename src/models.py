@@ -246,7 +246,7 @@ class NextWordPredictorModel(torch.nn.Module):
                 self.num_rnn_hidden_layers, batch_size, self.hidden_state_size
             ).to(self.device).detach()
     
-    def evaluate(self, eval_dataloader):
+    def evaluate(self, eval_dataloader, sep_losses = False, eval_mode = True, node = None):
         """
         Evaluates the given batch and returns the corresponding loss
 
@@ -260,8 +260,13 @@ class NextWordPredictorModel(torch.nn.Module):
         - loss : float
             The average loss on the input data
         """
-        self.eval()
-        losses = []
+        if eval_mode:
+            self.eval()
+        if sep_losses:
+            sample_losses = []
+            regularizer_losses = []
+
+        total_losses = []
         with torch.no_grad():
             for batch in tqdm(eval_dataloader):
                 hidden = self.init_hidden(eval_dataloader.batch_size)
@@ -269,11 +274,21 @@ class NextWordPredictorModel(torch.nn.Module):
                 outputs = torch.transpose(outputs, 1,2)
                 labels = batch[:,1:]
                 
-                loss = self.criterion(outputs, labels) #+ self.regularizer() / len(batch)
+                loss = self.criterion(outputs, labels)
+                if node is not None:
+                    reg_loss = self.regularizer(self, node) / len(batch)
+                else:
+                    reg_loss = self.regularizer()
+                total_loss = loss + reg_loss
+
+                total_losses.append(total_loss.item())
+                if sep_losses:
+                    sample_losses.append(loss.item())
+                    regularizer_losses.append(reg_loss.item())
                 
-                losses.append(loss.item())
-                
-        return np.mean(losses)
+        if sep_losses:
+            return total_losses, sample_losses, regularizer_losses
+        return np.mean(total_losses)
         
     def epoch_step(self, data_loader, node, with_tqdm = True, sep_losses = False):
         """
