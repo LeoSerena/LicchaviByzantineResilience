@@ -254,6 +254,10 @@ class NextWordPredictorModel(torch.nn.Module):
         ----------
         - eval_dataloader : torch.utils.data.DataLoader
             The data loader to be evaluated
+        - sep_losses : bool
+            Whether to compute regularizer loss and samples loss separately
+        - eval_mode : bool
+            
         
         Returns
         -------
@@ -276,10 +280,14 @@ class NextWordPredictorModel(torch.nn.Module):
                 
                 loss = self.criterion(outputs, labels)
                 if node is not None:
-                    reg_loss = self.regularizer(self, node) / len(batch)
+                    reg_loss = self.regularizer() / len(batch)
+                    if hasattr(self, 'general_regularizer'):
+                        loss = reg_loss + loss
+                        reg_loss = self.general_regularizer(self, node)
                 else:
                     reg_loss = self.regularizer()
                 total_loss = loss + reg_loss
+                
 
                 total_losses.append(total_loss.item())
                 if sep_losses:
@@ -322,7 +330,13 @@ class NextWordPredictorModel(torch.nn.Module):
             labels = batch[:,1:]
             
             loss = self.criterion(outputs, labels)
-            reg_loss = self.regularizer(self, node) / len(batch)
+            reg_loss = self.regularizer() / len(batch)
+            # If we have a general model reg loss, we say that the reg loss is the latter
+            # Otherwise it is the self model regularization loss
+            if hasattr(self, 'general_regularizer'):
+                loss = reg_loss + loss
+                reg_loss = self.general_regularizer(self, node)
+            
             total_loss = loss + reg_loss
             
             if self.fp16:
@@ -547,7 +561,7 @@ class NextWordPredictorModel(torch.nn.Module):
 
         return ' '.join([vocabulary.idx_to_word[i] for i in tokens])
 
-def init_model(vocabulary : Vocabulary, **params):
+def init_model(vocabulary : Vocabulary, lr : float = None,  **params):
     def map_weights(weights, m_ = 0.01, M_ = 1):
         weights = 1 / weights
         M, m = max(weights), min(weights)
@@ -556,6 +570,7 @@ def init_model(vocabulary : Vocabulary, **params):
     device = params['device']
     fp16 = params.pop('fp16')
     opt = params.pop('opt')
+    
     lr = params.pop('LEARNING_RATE')
 
     if params['weight'] and vocabulary is not None:

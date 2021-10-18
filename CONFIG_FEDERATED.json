@@ -13,15 +13,18 @@
     "metrics_results_folder" : "values",
     "plots_results_folder" : "plots",
 
+    "general_model_lr" : 1e-3,
+    "node_model_lr" : 1e-3,
     "num_nodes" : 1000,
-    "num_training_nodes" : 10,
-    "num_byzantine" : 2,
+    "num_training_nodes" : 20,
+    "num_byzantine" : 20,
     "byzantine_type" : "null",
     "data_sparsity" : "normal",
-    "lambda_0" : 1e-5,
+    "lambda_0" : 1e-6,
+    "node_lambda" : 1,
     "p_0" : 2,
     "p_n" : 1,
     "lambdas" : "uniform",
-    "lambda_n" : 1e-3,
+    "lambda_n" : 1e-2,
     "nodes_data_folder" : "nodes_data"
 }

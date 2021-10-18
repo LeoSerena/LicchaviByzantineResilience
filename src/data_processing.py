@@ -177,79 +177,85 @@ def prepare_data(
     nodes_data_folder = 'nodes_data'
 ):
     tweets_file = f'tweets_{id_}.csv'
-    users_file = f'users_{id_}.csv'
 
-    user_tweets_file = f'users_tweets_{id_}.csv'
+    # user_tweets_file = f'users_tweets_{id_}.csv'
 
     train_set_file = f'train_{id_}.pickle'
     val_set_file = f'val_{id_}.pickle'
     test_set_file = f'test_{id_}.pickle'
     
     data_files = os.listdir(data_path)
-    if (train_set_file not in data_files or \
-        val_set_file not in data_files or \
-        test_set_file not in data_files
-    ):
-        if (tweets_file not in data_files) or (users_file not in data_files):
-            logging.error(f'Neither parsed nor raw data was found in the {data_path} directory')
-            print(tweets_file)
-            print(users_file)
-            print(data_files)
-        else:
-            tweets_2 = pd.read_csv(os.path.join(data_path, tweets_file))
-            tweets_2 = tweets_2[tweets_2['lang'] == 'en']
-            lengths = tweets_2['body'].map(len)
-            tweets_2 = tweets_2[lengths.map(lambda x : 20 < x and x <= 140)]
 
-            users = tweets_2['author_id'].value_counts()[:N_USERS]
-            users_tweets = tweets_2[tweets_2['author_id'].map(lambda x : x in users.index)]
-            i = 1
-            for (user_id, screename), user_tweets in users_tweets.groupby(['author_id', 'author_screen_name']):
-                with open(os.path.join(nodes_data_folder, f"node_{i}_{user_id}_{screename}.pickle"), 'wb') as f:
-                    pickle.dump(list(user_tweets['body']), f)
-                i+=1
-            users_tweets.to_csv(os.path.join(data_path, user_tweets_file))
-            logging.info('generated users data')
-            del users_tweets
-            gc.collect()
-
-            np.random.seed(SEED)
-
-            LM_tweets = tweets_2[tweets_2['author_id'].map(lambda x : x not in users.index)].set_index('author_id')
-            del tweets_2
-            gc.collect()
-            LM_tweets_users = list(LM_tweets.index.unique())
-            np.random.shuffle(LM_tweets_users)
-
-            n_users = len(LM_tweets_users)
-            test_users = LM_tweets_users[:int(test_split * n_users)]
-            val_users = LM_tweets_users[int(test_split * n_users):int((test_split + val_split) * n_users)]
-            train_users = LM_tweets_users[int((test_split + val_split) * n_users):]
-
-            assert n_users == len(test_users) + len(val_users) + len(train_users)
-
-            test_set = list(LM_tweets.loc[test_users]['body'])
-            val_set = list(LM_tweets.loc[val_users]['body'])
-            train_set = list(LM_tweets.loc[train_users]['body'])
-
-            assert len(LM_tweets) == len(test_set) + len(val_set) + len(train_set)
-
-            with open(os.path.join(data_path, train_set_file), 'wb') as f:
-                pickle.dump(train_set, f)
-            with open(os.path.join(data_path, val_set_file), 'wb') as f:
-                pickle.dump(val_set, f)
-            with open(os.path.join(data_path, test_set_file), 'wb') as f:
-                pickle.dump(test_set, f)
-            
-            logging.info(f'generated train-val-test sets for id {id_}')
-            logging.info(f"""
-                trainining set : {len(train_set)} tweets for {len(train_users)} users
-                validation set : {len(val_set)} tweets for {len(val_users)} users
-                test set       : {len(test_set)} tweets for {len(test_users)} users
-            """)
-
+    if tweets_file not in data_files:
+        logging.error(f'Neither parsed nor raw data was found in the {data_path} directory')
+        print(tweets_file)
+        print(data_files)
     else:
-        logging.info('data was already found')
+        users_tweets = pd.DataFrame()
+        tweets = pd.read_csv(os.path.join(data_path, tweets_file))
+        tweets = tweets[tweets['lang'] == 'en']
+        lengths = tweets['body'].map(len)
+        tweets = tweets[lengths.map(lambda x : 20 < x and x <= 140)]
+
+        users_ids = list(tweets['author_id'].value_counts()[:N_USERS].index)
+        users_tweets = users_tweets.append(tweets[tweets['author_id'].map(lambda x : x in users_ids)])
+        for j in range(1,4):
+            if j != id_:
+                tweets = pd.read_csv(os.path.join(data_path,  f'tweets_{j}.csv'))
+                tweets = tweets[tweets['lang'] == 'en']
+                lengths = tweets['body'].map(len)
+                tweets = tweets[lengths.map(lambda x : 20 < x and x <= 140)]
+                users_tweets = users_tweets.append(tweets[tweets['author_id'].map(lambda x : x in users_ids)])
+
+        for (user_id, screename), user_tweets in users_tweets.groupby(['author_id', 'author_screen_name']):
+            i = int(users_ids.index(user_id) + 1)
+            bodies = list(user_tweets['body'])
+            with open(os.path.join(nodes_data_folder, f"node_{i}_{len(bodies)}_{user_id}_{screename}.pickle"), 'wb') as f:
+                pickle.dump(bodies, f)
+
+        # users_tweets.to_csv(os.path.join(data_path, user_tweets_file))
+        logging.info('generated users data')
+        del users_tweets
+        gc.collect()
+
+        np.random.seed(SEED)
+
+        tweets = pd.read_csv(os.path.join(data_path, tweets_file))
+        tweets = tweets[tweets['lang'] == 'en']
+        lengths = tweets['body'].map(len)
+        tweets = tweets[lengths.map(lambda x : 20 < x and x <= 140)]
+        LM_tweets = tweets[tweets['author_id'].map(lambda x : x not in users_ids)].set_index('author_id')
+        del tweets
+        gc.collect()
+        LM_tweets_users = list(LM_tweets.index.unique())
+        np.random.shuffle(LM_tweets_users)
+
+        n_users = len(LM_tweets_users)
+        test_users = LM_tweets_users[:int(test_split * n_users)]
+        val_users = LM_tweets_users[int(test_split * n_users):int((test_split + val_split) * n_users)]
+        train_users = LM_tweets_users[int((test_split + val_split) * n_users):]
+
+        assert n_users == len(test_users) + len(val_users) + len(train_users)
+
+        test_set = list(LM_tweets.loc[test_users]['body'])
+        val_set = list(LM_tweets.loc[val_users]['body'])
+        train_set = list(LM_tweets.loc[train_users]['body'])
+
+        assert len(LM_tweets) == len(test_set) + len(val_set) + len(train_set)
+
+        with open(os.path.join(data_path, train_set_file), 'wb') as f:
+            pickle.dump(train_set, f)
+        with open(os.path.join(data_path, val_set_file), 'wb') as f:
+            pickle.dump(val_set, f)
+        with open(os.path.join(data_path, test_set_file), 'wb') as f:
+            pickle.dump(test_set, f)
+        
+        logging.info(f'generated train-val-test sets for id {id_}')
+        logging.info(f"""
+            trainining set : {len(train_set)} tweets for {len(train_users)} users
+            validation set : {len(val_set)} tweets for {len(val_users)} users
+            test set       : {len(test_set)} tweets for {len(test_users)} users
+        """)
 
 if __name__ == '__main__':
 

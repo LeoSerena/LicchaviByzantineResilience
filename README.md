@@ -2,13 +2,11 @@
 
 ## DESCRIPTION
 
-Byzantine resilience investigation under federated learning setup
+Byzantine resilience investigation under federated learning setup for NLP task
 
-## STRUCTURE
-
-- data_extraction
 
 ## PAPERS
 
 - google next word prediciton:
 https://arxiv.org/pdf/1811.03604.pdf
+

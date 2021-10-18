@@ -4,6 +4,7 @@ import os
 import logging
 import pickle
 import gc
+from datetime import date
 
 import numpy as np
 from tqdm import tqdm
@@ -12,7 +13,7 @@ import matplotlib.pyplot as plt
 sys.path.append('.')
 from src.data_processing import  SequenceDataset
 from src.models import NextWordPredictorModel, init_model
-from src.utils import make_dir_if_not_exists
+from src.utils import make_dir_if_not_exists, split_data
 
 import torch
 
@@ -54,10 +55,28 @@ class UserNode(Node):
         
         with open(os.path.join(datafolder, self.file), 'rb') as f:
             data = pickle.load(f)
+
+        train_set, val_set, test_set = split_data(data)
             
         self.data = SequenceDataset(
             vocabulary = vocabulary,
-            text = data,
+            text = train_set,
+            min_seq_length = min_seq_length,
+            max_seq_length = max_seq_length,
+            device = device
+        )
+
+        self.val = SequenceDataset(
+            vocabulary = vocabulary,
+            text = val_set,
+            min_seq_length = min_seq_length,
+            max_seq_length = max_seq_length,
+            device = device
+        )
+
+        self.test = SequenceDataset(
+            vocabulary = vocabulary,
+            text = test_set,
             min_seq_length = min_seq_length,
             max_seq_length = max_seq_length,
             device = device
@@ -112,7 +131,8 @@ class RandomByzantineNode(ByzantineNode):
         super(ByzantineNode, self).__init__(id_, lambda_, p)
         length = 1000
         random_tokens = np.random.randint(low = 1, high = vocabulary.get_vocab_size(), size = int(length * max_seq_length))
-        random_data = np.array([vocabulary.idx_to_word[x] for x in random_tokens]).reshape((length, max_seq_length))
+        random_data = np.array([vocabulary.idx_to_word[x] for x in random_tokens]).reshape((length, max_seq_length)).tolist()
+        random_data = [' '.join(x) for x in random_data]
         self.data = SequenceDataset(
             vocabulary = vocabulary,
             text = random_data,
@@ -151,7 +171,8 @@ class Federated():
         self.model_parameters = self.pipeline_args['MODEL_PARAMETERS']
         self.model_parameters['device'] = self.pipeline_args['DEVICE']
         self.model_parameters['vocab_size'] = self.vocabulary.get_vocab_size()
-        self.general_model = init_model(None, **self.model_parameters)
+        self.model_parameters['LEARNING_RATE'] = self.federated_args['general_model_lr']
+        self.general_model = init_model(None,  **self.model_parameters)
         self.load_model(path = load_model_from)
         self.save_embeddings()
         self.save_weights()
@@ -230,18 +251,19 @@ class Federated():
                 'max_seq_length' : self.federated_args['max_seq_length'],
                 'device' : self.federated_args['DEVICE']
             }
-            if node_id < self.num_bysantine + 1:
+            if node_id < self.num_nodes - self.num_bysantine + 1:
+                self.nodes[node_id] = UserNode(
+                    datafolder = self.federated_args['nodes_data_folder'],
+                    **parameters
+                )
+            else:
                 if self.byzantine_type == 'null':
                     self.nodes[node_id] = NullByzantineNode(**parameters)
                 elif self.byzantine_type == 'random':
                     self.nodes[node_id] = RandomByzantineNode(**parameters)
                 elif self.byzantine_type == 'strategic':
                     self.nodes[node_id] = StrategicalByzantineNode(**parameters)
-            else:
-                self.nodes[node_id] = UserNode(
-                    datafolder = self.federated_args['nodes_data_folder'],
-                    **parameters
-                )
+
         logging.info(f'generated {self.num_nodes} nodes with {self.num_bysantine} byzantine')
 
     def save_embeddings(self):
@@ -321,7 +343,10 @@ class Federated():
         self.general_model.train()
         self.general_model.freeze_embeddings()        
         # Initialize the model for the users
+        self.model_parameters['LEARNING_RATE'] = self.federated_args['node_model_lr']
         self.user_model = init_model(None, **self.model_parameters)
+        self.user_model.lambda_ = self.federated_args['node_lambda'] / len(self.nodes)
+        self.user_model.p = self.federated_args['p_0']
         self.user_model.load_model(path = self.load_model_from)
         self.user_model.train()
         del self.user_model.embedding_layer
@@ -373,7 +398,7 @@ class Federated():
                 shuffle = True,
                 drop_last = True
             )
-            self.user_model.regularizer = self.models_difference
+            self.user_model.general_regularizer = self.models_difference
             if epoch == 0:
                 self.load_weights(0, self.user_model)
                 user_total_losses, user_losses, user_reg_losses = self.user_model.evaluate(
@@ -396,7 +421,7 @@ class Federated():
             
             self.save_weights(node_id) 
 
-    def train(self, num_max_epochs, save_results = False):
+    def train(self, num_max_epochs, save_results = False, plt_name = ''):
         """
         Trains the nodes and the general model alternatively. The pass is done through
         all the nodes with their respective loss and regularizer depeneding on the general
@@ -428,12 +453,12 @@ class Federated():
             # performs the general model optimization step
             self.general_model.optimizer.step()
             # evaluates the general model performances
-            val_dataloader = torch.utils.data.DataLoader(self.val_dataset, batch_size = 32, drop_last = True)
+            val_dataloader = torch.utils.data.DataLoader(self.val_dataset, batch_size = 32, drop_last = True, shuffle = False)
             general_model_val_loss = self.general_model.evaluate(val_dataloader)
             self.general_model.train()
             self.general_model_val_losses[epoch] = general_model_val_loss
 
-        self.plot_training_history(save_results)
+        self.plot_training_history(save_results, plt_name)
 
     def generate_general(self, start_text : str, num_words : int = 100):
         return self.general_model.generate(start_text=start_text, vocabulary = self.vocabulary, num_words=num_words)
@@ -442,7 +467,7 @@ class Federated():
         self.load_weights(node_id, self.user_model)
         return self.user_model.generate(start_text=start_text, vocabulary = self.vocabulary, num_words=num_words)
 
-    def plot_training_history(self, save_results):
+    def plot_training_history(self, save_results, plt_name):
         if self.num_bysantine > 0:
             num_rows = 2
         else:
@@ -450,34 +475,53 @@ class Federated():
         losses_types = self.nodes[1].losses.keys()
         num_cols = len(losses_types)
         axs = plt.figure(figsize = (16,8)).subplots(num_rows, num_cols)
-        plt.suptitle(f"""$\lambda_0 = {self.general_model.lambda_} p_0 = {self.general_model.p} \lambda_n = {self.nodes[1].lambda_} p_n = {self.nodes[1].p}$""")
-        for i, (ax, loss_type) in enumerate(zip(axs[0],losses_types)):
+        plt.suptitle(f"""$\lambda_0 = {self.general_model.lambda_}$  $p_0 = {self.general_model.p}$  $lr_0 = {self.federated_args['general_model_lr']}$
+$\lambda_n = {self.nodes[1].lambda_}$  $p_n = {self.nodes[1].p}$ $lr_n = {self.federated_args['node_model_lr']}$""")
+        row_1 = axs[0] if num_rows > 1 else axs
+        for i, (ax, loss_type) in enumerate(zip(row_1,losses_types)):
             for node in self.nodes.values():
                 if isinstance(node, UserNode):
                     if i == 0:
                         ax.set_ylabel(f'UserNode loss ({self.num_nodes - self.num_bysantine})')
                     ax.set_title(loss_type)
                     ax.plot(node.losses[loss_type])
-        for j, (ax, loss_type) in enumerate(zip(axs[1], losses_types)):
-            for node in self.nodes.values():
-                if not isinstance(node, UserNode):
-                    if j == 0:
-                        ax.set_ylabel(f'{self.byzantine_type} Byzantine loss ({self.num_bysantine})')
-                    ax.plot(node.losses[loss_type])
+        if num_rows > 1:
+            for j, (ax, loss_type) in enumerate(zip(axs[1], losses_types)):
+                for node in self.nodes.values():
+                    if not isinstance(node, UserNode):
+                        if j == 0:
+                            ax.set_ylabel(f'{self.byzantine_type} Byzantine loss ({self.num_bysantine})')
+                        ax.plot(node.losses[loss_type])
 
-        filename = 'plot'
-        
+        today = date.today().strftime("%m-%d-%y")
+        filename_nodes = today + f"_nodes_{plt_name}.jpg"
+
         if save_results:
-            plt.savefig(os.path.join(self.plots_folder, filename))
+            plt.savefig(os.path.join(self.plots_folder, filename_nodes))
         else:
             plt.show()
+        plt.close()
+
+        plt.figure()
+        plt.plot(self.general_model_val_losses.values())
+        plt.title('Generale Model Validation loss')
+
+        filename_general = today + f"_general_{plt_name}.jpg"
+        if save_results:
+            plt.savefig(os.path.join(self.plots_folder, filename_general))
+        else:
+            plt.show()
+        plt.close()
+
 if __name__ == '__main__':
     
     args = sys.argv
     if len(args) < 2:
         num_epochs = 10
-    else:
+        name = ''
+    elif len(args) == 3:
         num_epochs = int(args[1])
+        name = args[2]
     logging.basicConfig(
         filename = os.path.join('logs','federated.log'), 
         level=logging.DEBUG
@@ -487,4 +531,4 @@ if __name__ == '__main__':
         "CONFIG_FEDERATED.json"
     )
 
-    federated.train(num_epochs, save_results = True)
+    federated.train(num_epochs, save_results = True, plt_name = name)

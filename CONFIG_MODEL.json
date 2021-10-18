@@ -33,7 +33,7 @@
 
     "TRAINING_PARAMETERS" : {
         "batch_size" : 16,
-        "num_epochs" : 5,
+        "num_epochs" : 9,
         "fp16" : 1,
         "regularizer" : "uniform",
         "p" : 2,
