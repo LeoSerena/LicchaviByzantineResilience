@@ -8,7 +8,7 @@ import sys
 
 from spacy import load
 
-from src.data_processing import FromRawTextVocabulary, FromTweetsVocabulary, \
+from src.data_processing import FromTweetsVocabulary, \
     Vocabulary, SequenceDataset
 
 from tqdm import tqdm

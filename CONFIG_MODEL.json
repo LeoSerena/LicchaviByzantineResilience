@@ -28,7 +28,8 @@
         "positional_encoding" : 0,
         "LEARNING_RATE" : 1e-3,
         "fp16" : 1,
-        "opt" : "ADAM"
+        "opt" : "ADAM",
+        "tied_embeddings" : 0
     },
 
     "TRAINING_PARAMETERS" : {

@@ -12,6 +12,9 @@ def make_dir_if_not_exists(
     if not os.path.isdir(path):
         logging.info('creating directory: ./{}'.format(path))
         os.makedirs(path)
+        return True
+    else:
+        return False
 
 def split_data(
     data : list,
@@ -26,12 +29,14 @@ def split_data(
     indices = list(range(N))
     np.random.shuffle(indices)
 
-    train_indices = indices[int(N * val_split):int(N * test_split)]
+    train_indices = indices[int(N * val_split):-int(N * test_split)]
     val_indices = indices[:int(N * val_split)]
-    test_indices = indices[int(N * test_split):]
+    test_indices = indices[-int(N * test_split):]
 
     train_set = data[train_indices]
     val_set = data[val_indices]
     test_set = data[test_indices]
+
+    assert len(train_set) + len(val_set) + len(test_set) == N
 
     return list(train_set), list(val_set), list(test_set)

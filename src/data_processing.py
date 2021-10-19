@@ -1,4 +1,3 @@
-from abc import abstractclassmethod
 import re
 import gc
 import os
@@ -13,6 +12,9 @@ import pandas as pd
 import numpy as np
 import nltk
 import torch
+import torchtext
+
+from utils import make_dir_if_not_exists
 
 def default_text_cleaner(string):
     string = re.sub(r'-\n', '', string)
@@ -167,7 +169,7 @@ class SequenceDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.tokens)
 
-def prepare_data(
+def prepare_tweets_data(
     N_USERS = 1000,
     data_path = 'data',
     id_ = 2,
@@ -257,27 +259,47 @@ def prepare_data(
             test set       : {len(test_set)} tweets for {len(test_users)} users
         """)
 
+def prepare_wiki_data(
+    N_USERS,
+    val_split,
+    test_split,
+    SEED,
+    nodes_data_folder
+):
+    np.random.seed(SEED)
+    path = os.path.join('.', 'data', 'wikitext-2')
+    if make_dir_if_not_exists(path):
+        torchtext.datasets.WikiText2(root = path, split = ('train', 'valid', 'test'))
+
+
 if __name__ == '__main__':
 
     logging.basicConfig(filename='logs/logs.log', level=logging.DEBUG)
-
-    if len(sys.argv) != 2:
-        raise AssertionError("""required 1 argument: the data id""")
-    id_ = sys.argv[1]
 
     with open('CONFIG_FEDERATED.json', 'r') as f:
         federated_parameters = json.load(f)
     with open('CONFIG_MODEL.json', 'r') as f:
         model_parameters = json.load(f)
-
+    
     data_parameters = model_parameters['DATA_PARAMETERS']
-
-    prepare_data(
-        N_USERS = federated_parameters['num_nodes'],
-        data_path = data_parameters['data_folder'],
-        id_ = id_,
-        val_split = data_parameters['val_split'],
-        test_split = data_parameters['test_split'],
-        SEED = model_parameters['NUMPY_SEED'],
-        nodes_data_folder = federated_parameters['nodes_data_folder']
-    )
+    if data_parameters['data_name'] == 'tweets':
+        if len(sys.argv) != 2:
+            raise AssertionError("""required 1 argument: the data id""")
+        id_ = sys.argv[1]
+        prepare_tweets_data(
+            N_USERS = federated_parameters['num_nodes'],
+            data_path = data_parameters['data_folder'],
+            id_ = id_,
+            val_split = data_parameters['val_split'],
+            test_split = data_parameters['test_split'],
+            SEED = model_parameters['NUMPY_SEED'],
+            nodes_data_folder = federated_parameters['nodes_data_folder']
+        )
+    elif data_parameters['data_name'] == 'WikiText-2':
+        prepare_wiki_data(
+            N_USERS = federated_parameters['num_nodes'],
+            val_split = data_parameters['val_split'],
+            test_split = data_parameters['test_split'],
+            SEED = model_parameters['NUMPY_SEED'],
+            nodes_data_folder = federated_parameters['nodes_data_folder']
+        )

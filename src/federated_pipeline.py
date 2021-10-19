@@ -52,7 +52,10 @@ class UserNode(Node):
         for file in os.listdir(datafolder):
             if f'node_{id_}' in file:
                 self.file = file
-        
+
+        self.num_bodies = file.split('_')[2]
+        print(self.num_bodies)
+
         with open(os.path.join(datafolder, self.file), 'rb') as f:
             data = pickle.load(f)
 
@@ -99,6 +102,7 @@ class NullByzantineNode(ByzantineNode):
         id_,
         lambda_,
         p,
+        N,
         vocabulary,
         min_seq_length,
         max_seq_length,
@@ -106,8 +110,7 @@ class NullByzantineNode(ByzantineNode):
     ):
         super(ByzantineNode, self).__init__(id_,lambda_,p)
         padd_token = 'trump'
-        length = 1000
-        data = [' '.join([padd_token] * max_seq_length)] * length
+        data = [' '.join([padd_token] * max_seq_length)] * N
         self.data = SequenceDataset(
             vocabulary = vocabulary,
             text = data,
@@ -123,15 +126,15 @@ class RandomByzantineNode(ByzantineNode):
             id_,
             lambda_,
             p,
+            N,
             vocabulary,
             min_seq_length,
             max_seq_length,
             device 
         ):
         super(ByzantineNode, self).__init__(id_, lambda_, p)
-        length = 1000
-        random_tokens = np.random.randint(low = 1, high = vocabulary.get_vocab_size(), size = int(length * max_seq_length))
-        random_data = np.array([vocabulary.idx_to_word[x] for x in random_tokens]).reshape((length, max_seq_length)).tolist()
+        random_tokens = np.random.randint(low = 1, high = vocabulary.get_vocab_size(), size = int(N * max_seq_length))
+        random_data = np.array([vocabulary.idx_to_word[x] for x in random_tokens]).reshape((N, max_seq_length)).tolist()
         random_data = [' '.join(x) for x in random_data]
         self.data = SequenceDataset(
             vocabulary = vocabulary,
@@ -148,9 +151,9 @@ class StrategicalByzantineNode(ByzantineNode):
 class Federated():
     def __init__(
         self,
-        pipeline_args : str,
-        federated_args : str,
-        load_model_from = None
+        pipeline_args,
+        federated_args,
+        load_model_from
     ):
         self.load_model_from = load_model_from
         # READ CONFIG FILEs
@@ -180,7 +183,7 @@ class Federated():
         # INIT NODES
         self.num_nodes = self.federated_args['num_nodes']
         self.build_nodes()
-
+    
     def prepare_directories(self):
         self.weights_dir = self.federated_args['weights_dir']
         make_dir_if_not_exists(self.weights_dir)
@@ -199,7 +202,7 @@ class Federated():
         make_dir_if_not_exists(self.metrics_folder)
         self.plots_folder = os.path.join(self.results_folder, self.federated_args['plots_results_folder'])
         make_dir_if_not_exists(self.plots_folder)
-
+    
     def load_val_test_set(self):
         test_set_file = os.path.join('data', 'test_2.pickle')
         with open(test_set_file, 'rb') as f:
@@ -223,12 +226,6 @@ class Federated():
             device = self.pipeline_args['DEVICE'],
         )
 
-    def init_lambdas(self, num_nodes : int):
-        self.lambdas = {}
-        if self.federated_args['lambdas'] == 'uniform':
-            for node_id in range(1, num_nodes+1):
-                self.lambdas[node_id] = self.federated_args['lambda_n']
-
     def build_nodes(self):
         """
         Builds N nodes with f byzantine. The type of byzantine nodes can be 
@@ -236,6 +233,7 @@ class Federated():
         self.num_nodes = self.federated_args['num_training_nodes']
         self.num_bysantine = self.federated_args['num_byzantine']
         self.byzantine_type = self.federated_args['byzantine_type']
+        self.byzantine_datasize = self.federated_args['byzantine_datasize']
         self.init_lambdas(self.num_nodes)
         if self.num_nodes < self.num_bysantine:
             logging.error("The number of byzantine nodes can't be superior to the total number of users")
@@ -257,6 +255,7 @@ class Federated():
                     **parameters
                 )
             else:
+                parameters['N'] = self.byzantine_datasize
                 if self.byzantine_type == 'null':
                     self.nodes[node_id] = NullByzantineNode(**parameters)
                 elif self.byzantine_type == 'random':
@@ -265,6 +264,9 @@ class Federated():
                     self.nodes[node_id] = StrategicalByzantineNode(**parameters)
 
         logging.info(f'generated {self.num_nodes} nodes with {self.num_bysantine} byzantine')
+
+    def load_model(self, path = None):
+        self.general_model.load_model(path)
 
     def save_embeddings(self):
         embeddings_state_dict = self.general_model.embedding_layer.state_dict()
@@ -330,9 +332,77 @@ class Federated():
             optim_stat_dict = torch.load(optim_path)
             model.optimizer.load_state_dict(optim_stat_dict)
 
+    def generate_general(self, start_text : str, num_words : int = 100):
+        return self.general_model.generate(start_text=start_text, vocabulary = self.vocabulary, num_words=num_words)
 
-    def load_model(self, path = None):
-        self.general_model.load_model(path)
+    def generate_node(self, start_text : str, node_id : int, num_words : int = 100):
+        self.load_weights(node_id, self.user_model)
+        return self.user_model.generate(start_text=start_text, vocabulary = self.vocabulary, num_words=num_words)
+
+    def plot_training_history(self, save_results, plt_name):
+        if self.num_bysantine > 0:
+            num_rows = 2
+        else:
+            num_rows = 1
+        losses_types = self.nodes[1].losses.keys()
+        num_cols = len(losses_types)
+        axs = plt.figure(figsize = (16,8)).subplots(num_rows, num_cols)
+        plt.suptitle(f"""$\lambda_0 = {self.general_model.lambda_}$  $p_0 = {self.general_model.p}$  $lr_0 = {self.federated_args['general_model_lr']}$
+$\lambda_n = {self.nodes[1].lambda_}$  $p_n = {self.nodes[1].p}$ $lr_n = {self.federated_args['node_model_lr']}$""")
+        row_1 = axs[0] if num_rows > 1 else axs
+        for i, (ax, loss_type) in enumerate(zip(row_1,losses_types)):
+            for node in self.nodes.values():
+                if isinstance(node, UserNode):
+                    if i == 0:
+                        ax.set_ylabel(f'UserNode loss ({self.num_nodes - self.num_bysantine})')
+                    ax.set_title(loss_type)
+                    ax.plot(node.losses[loss_type])
+        if num_rows > 1:
+            for j, (ax, loss_type) in enumerate(zip(axs[1], losses_types)):
+                for node in self.nodes.values():
+                    if not isinstance(node, UserNode):
+                        if j == 0:
+                            ax.set_ylabel(f'{self.byzantine_type} Byzantine loss ({self.num_bysantine})')
+                        ax.plot(node.losses[loss_type])
+
+        today = date.today().strftime("%m-%d-%y")
+        filename_nodes = today + f"_nodes_{plt_name}.jpg"
+
+        if save_results:
+            plt.savefig(os.path.join(self.plots_folder, filename_nodes))
+        else:
+            plt.show()
+        plt.close()
+
+        plt.figure()
+        plt.plot(self.general_model_val_losses.values())
+        plt.title('Generale Model Validation loss')
+
+        filename_general = today + f"_general_{plt_name}.jpg"
+        if save_results:
+            plt.savefig(os.path.join(self.plots_folder, filename_general))
+        else:
+            plt.show()
+        plt.close()
+
+class Federated_LICCHAVI(Federated):
+    def __init__(
+        self,
+        pipeline_args : str,
+        federated_args : str,
+        load_model_from = None
+    ):
+        super(Federated_LICCHAVI, self).__init__(
+            pipeline_args,
+            federated_args,
+            load_model_from
+        )
+
+    def init_lambdas(self, num_nodes : int):
+        self.lambdas = {}
+        if self.federated_args['lambdas'] == 'uniform':
+            for node_id in range(1, num_nodes+1):
+                self.lambdas[node_id] = self.federated_args['lambda_n']
 
     def prepare_models_for_training(self):
         """
@@ -460,61 +530,7 @@ class Federated():
 
         self.plot_training_history(save_results, plt_name)
 
-    def generate_general(self, start_text : str, num_words : int = 100):
-        return self.general_model.generate(start_text=start_text, vocabulary = self.vocabulary, num_words=num_words)
-
-    def generate_node(self, start_text : str, node_id : int, num_words : int = 100):
-        self.load_weights(node_id, self.user_model)
-        return self.user_model.generate(start_text=start_text, vocabulary = self.vocabulary, num_words=num_words)
-
-    def plot_training_history(self, save_results, plt_name):
-        if self.num_bysantine > 0:
-            num_rows = 2
-        else:
-            num_rows = 1
-        losses_types = self.nodes[1].losses.keys()
-        num_cols = len(losses_types)
-        axs = plt.figure(figsize = (16,8)).subplots(num_rows, num_cols)
-        plt.suptitle(f"""$\lambda_0 = {self.general_model.lambda_}$  $p_0 = {self.general_model.p}$  $lr_0 = {self.federated_args['general_model_lr']}$
-$\lambda_n = {self.nodes[1].lambda_}$  $p_n = {self.nodes[1].p}$ $lr_n = {self.federated_args['node_model_lr']}$""")
-        row_1 = axs[0] if num_rows > 1 else axs
-        for i, (ax, loss_type) in enumerate(zip(row_1,losses_types)):
-            for node in self.nodes.values():
-                if isinstance(node, UserNode):
-                    if i == 0:
-                        ax.set_ylabel(f'UserNode loss ({self.num_nodes - self.num_bysantine})')
-                    ax.set_title(loss_type)
-                    ax.plot(node.losses[loss_type])
-        if num_rows > 1:
-            for j, (ax, loss_type) in enumerate(zip(axs[1], losses_types)):
-                for node in self.nodes.values():
-                    if not isinstance(node, UserNode):
-                        if j == 0:
-                            ax.set_ylabel(f'{self.byzantine_type} Byzantine loss ({self.num_bysantine})')
-                        ax.plot(node.losses[loss_type])
-
-        today = date.today().strftime("%m-%d-%y")
-        filename_nodes = today + f"_nodes_{plt_name}.jpg"
-
-        if save_results:
-            plt.savefig(os.path.join(self.plots_folder, filename_nodes))
-        else:
-            plt.show()
-        plt.close()
-
-        plt.figure()
-        plt.plot(self.general_model_val_losses.values())
-        plt.title('Generale Model Validation loss')
-
-        filename_general = today + f"_general_{plt_name}.jpg"
-        if save_results:
-            plt.savefig(os.path.join(self.plots_folder, filename_general))
-        else:
-            plt.show()
-        plt.close()
-
 if __name__ == '__main__':
-    
     args = sys.argv
     if len(args) < 2:
         num_epochs = 10
@@ -526,7 +542,7 @@ if __name__ == '__main__':
         filename = os.path.join('logs','federated.log'), 
         level=logging.DEBUG
     )
-    federated = Federated(
+    federated = Federated_LICCHAVI(
         "CONFIG_MODEL.json",
         "CONFIG_FEDERATED.json"
     )
