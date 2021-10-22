@@ -6,16 +6,15 @@ import logging
 import pickle
 import sys
 
-from spacy import load
-
-from src.data_processing import FromTweetsVocabulary, \
-    Vocabulary, SequenceDataset
+from src.data_processing import FromTweetsVocabulary, FromRawTextVocabulary, \
+    Vocabulary, SequenceDataset, text_cleaner_raw
+from src.utils import make_dir_if_not_exists
 
 from tqdm import tqdm
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
-from nltk.tokenize import TweetTokenizer
+from nltk.tokenize import TweetTokenizer, word_tokenize
 
 from apex import amp
 import torch
@@ -71,7 +70,10 @@ class NextWordPredictorModel(torch.nn.Module):
         dropout : float,
         device : str,
         weight : list = None,
-        positional_encoding : bool = False
+        positional_encoding : bool = False,
+        tied_embeddings : bool = False,
+        q : int = 2,
+        gamma : float = 1e-3
     ):
         """
         Torch.nn.MModule for next word prediction using RNNs.
@@ -97,6 +99,12 @@ class NextWordPredictorModel(torch.nn.Module):
             Must be of the same size as the number of tokens, aka vocab_size.
         - positional_encoding : bool
             Whether to use the positional encoding on top of the embeddings.
+        - tied_embeddings : bool
+            Whether to tied embeddings encoder weigths with decoder weights
+        - q : int
+            The norm to use for regularization
+        - gamma : float
+            The weight of the regularizer
         """
         super().__init__()
         self.emb_dim = emb_dim
@@ -106,6 +114,11 @@ class NextWordPredictorModel(torch.nn.Module):
         self.vocab_size = vocab_size
         self.positional_encoding = positional_encoding
         self.type_of_rnn = type_of_rnn
+        self.tied_embeddings = tied_embeddings
+        self.q = q
+        self.gamma = gamma
+        if tied_embeddings:
+            print('tied_embeddings not yet implemented')
         
         # Embedding layer
         self.embedding_layer = torch.nn.Embedding(
@@ -245,14 +258,47 @@ class NextWordPredictorModel(torch.nn.Module):
             return torch.zeros(
                 self.num_rnn_hidden_layers, batch_size, self.hidden_state_size
             ).to(self.device).detach()
+
+    def perplexity(self, dataloader):
+        """
+        Computes the perplexity of the model on the given dataset
+
+        Parameters
+        ----------
+        - dataloader : torch.utils.data.DataLoader
+            The data to be tested
+        """
+        m = torch.nn.Softmax(dim = 0)
+        with torch.no_grad():
+            total_tokens = 0
+            probabilities = []
+            for batch in tqdm(dataloader):
+                hidden = self.init_hidden(dataloader.batch_size)
+                outputs, _ = self.forward(batch[:,:-1], hidden)
+                outputs = torch.transpose(outputs, 1,2)
+                labels = batch[:,1:]
+                for i in range(dataloader.batch_size):
+                    seq = outputs[i]
+                    lab = labels[i]
+
+                    logits = m(seq)
+
+                    logits = logits[lab,range(len(lab))]
+                    logits = logits[lab != 0].cpu().numpy()
+
+                    probabilities.append(sum(np.log(logits)))
+                    total_tokens += len(logits)
+            
+        perplexity = np.exp(- np.sum(probabilities) / total_tokens)
+        return perplexity 
     
-    def evaluate(self, eval_dataloader, sep_losses = False, eval_mode = True, node = None):
+    def evaluate(self, dataloader, sep_losses = False, eval_mode = True, node = None, with_tqdm = True):
         """
         Evaluates the given batch and returns the corresponding loss
 
         Parameters
         ----------
-        - eval_dataloader : torch.utils.data.DataLoader
+        - dataloader : torch.utils.data.DataLoader
             The data loader to be evaluated
         - sep_losses : bool
             Whether to compute regularizer loss and samples loss separately
@@ -272,8 +318,8 @@ class NextWordPredictorModel(torch.nn.Module):
 
         total_losses = []
         with torch.no_grad():
-            for batch in tqdm(eval_dataloader):
-                hidden = self.init_hidden(eval_dataloader.batch_size)
+            for batch in tqdm(dataloader) if with_tqdm else dataloader:
+                hidden = self.init_hidden(dataloader.batch_size)
                 outputs, _ = self.forward(batch[:,:-1], hidden)
                 outputs = torch.transpose(outputs, 1,2)
                 labels = batch[:,1:]
@@ -298,7 +344,7 @@ class NextWordPredictorModel(torch.nn.Module):
             return total_losses, sample_losses, regularizer_losses
         return np.mean(total_losses)
         
-    def epoch_step(self, data_loader, node, with_tqdm = True, sep_losses = False):
+    def epoch_step(self, data_loader, node = None, with_tqdm = True, sep_losses = False):
         """
         Performs a full run thorugh the data_loader.
 
@@ -435,7 +481,7 @@ class NextWordPredictorModel(torch.nn.Module):
     def regularizer(self):
         """
         Computes the regularizer on all the non bias and trainable parameters.
-        $$\frac{1}{p} \lambda \sum_w w^p$$
+        $$\frac{1}{p} \gamma \sum_w w^p$$
 
         Returns
         -------
@@ -443,13 +489,13 @@ class NextWordPredictorModel(torch.nn.Module):
         """
         reg = torch.FloatTensor([0]).to(self.device)
         reg.requires_grad = True
-        if self.lambda_ == 0:
+        if self.gamma == 0:
             return reg
         else:
             for name, W in self.named_parameters():
                 if W.requires_grad and 'bias' not in name:
-                    reg = reg + torch.pow(W, self.p).sum()
-            return 1/self.p * self.lambda_ * reg
+                    reg = reg + torch.pow(W, self.q).sum()
+            return 1/self.q * self.gamma * reg
 
     def fit(
         self, 
@@ -458,8 +504,6 @@ class NextWordPredictorModel(torch.nn.Module):
         num_epochs = 30,
         fp16 : bool = False,
         regularizer = 'uniform',
-        p = 2,
-        lambda_ : float = 1e-3,
         eval_epoch_0 : bool =  True,
         early_stopping = True,
         early_stopping_patience = 3,
@@ -483,10 +527,6 @@ class NextWordPredictorModel(torch.nn.Module):
             Whether mixed precision is used for training
         - regularizer : str
             The type of reguirizer to use. Can be None, 'uniform' or 'pregressive'
-        - p : int
-            The norm to use for regularization
-        - lambda_ : float
-            The weight of the regularizer
         - eval_epoch_0 : bool
             Whether to evaluate the dataloaders at epoch 0
         - early_stopping : bool
@@ -507,10 +547,9 @@ class NextWordPredictorModel(torch.nn.Module):
         - metrics : dict
             A dictionary containing the train, eval losses and the lr at every epoch.
         """
-        self.model_path = model_path
+        make_dir_if_not_exists(model_path)
+        self.model_path = os.path.join(model_path, self.model_name)
         self.regularizer_type = regularizer
-        self.p = p
-        self.lambda_ = lambda_
         self.fp16 = fp16
 
         if early_stopping:
@@ -539,7 +578,7 @@ class NextWordPredictorModel(torch.nn.Module):
             print(f"Eval loss at epoch {epoch} : {eval_loss}")
             if early_stopping:
                 current_metric = metrics[epoch][early_stopping_metric]
-                if self.update_early_stopping(current_metric, epoch):
+                if self.update_early_stopping(current_metric, epoch, path = self.model_path):
                     break
                     
         return metrics
@@ -619,6 +658,7 @@ class Pipeline():
         - load_model_data : bool
             Whether to load the train-val-test set
         """
+        config_file = os.path.join('config_files', config_file)
         with open(config_file, 'r') as f:
             self.parameters = json.load(f)
         self.load_model_data = load_model_data
@@ -628,6 +668,7 @@ class Pipeline():
 
         data_parameters = self.parameters['DATA_PARAMETERS']
         data_parameters['device'] = self.parameters['DEVICE']
+        logging.info('preparing data...')
         self.init_data(**data_parameters)
 
         model_parameters = self.parameters['MODEL_PARAMETERS']
@@ -665,6 +706,10 @@ class Pipeline():
         -------
         void
         """
+
+        vocab_path = os.path.join('vocabs', params['vocab_file'])
+        make_dir_if_not_exists('./vocabs')
+
         if params['data_name'] == 'tweets':
             id_ = 2
             data_folder = params['data_folder']
@@ -681,6 +726,7 @@ class Pipeline():
 
             with open(train_set_file, 'rb') as f:
                 train_set = pickle.load(f)
+            train_set = train_set
             if params['vocab_from_scratch']:
                 logging.info('generating vocabulary...')
                 self.vocabulary = FromTweetsVocabulary(
@@ -691,46 +737,91 @@ class Pipeline():
                     text_cleaner = None
                 )
                 logging.info('vocabulary generated')
-                with open(params['vocab_file'], 'wb') as f:
+                with open(vocab_path, 'wb') as f:
                     pickle.dump(self.vocabulary, f)
             else:
                 try:
-                    with open(params['vocab_file'], 'rb') as f:
+                    with open(vocab_path, 'rb') as f:
                         self.vocabulary = pickle.load(f)
                     logging.info('vocabulary loaded')
                 except FileNotFoundError:
                     logging.error("vocabulary file not found")
                     sys.exit(1)
 
-            if self.load_model_data:
-                self.train_dataset = SequenceDataset(
-                    vocabulary = self.vocabulary,
-                    text = train_set,
-                    min_seq_length = params['min_seq_length'],
-                    max_seq_length = params['max_seq_length'],
-                    device = params['device'],
+        elif 'WikiText' in params['data_name']:
+            data_folder = params['data_folder']
+            if '103' in params['data_name']:
+                id_ = '103'
+                path = os.path.join('.', data_folder, 'wikitext-3')
+            else:
+                id_ = '2'
+                path = os.path.join('.', data_folder, 'wikitext-2')
+
+            train_set_file = os.path.join(path, f'train_{id_}.pickle')
+            val_set_file = os.path.join(path, f'val_{id_}.pickle')
+            test_set_file = os.path.join(path, f'test_{id_}.pickle')
+
+            tokenizer = word_tokenize
+            with open(train_set_file, 'rb') as f:
+                train_set = pickle.load(f)
+            if params['vocab_from_scratch']:
+                logging.info('generating vocabulary...')
+                self.vocabulary = FromRawTextVocabulary(
+                    max_voc_size = params['max_voc_size'],
+                    min_word_occ = params['min_word_occ'],
+                    text_cleaner = text_cleaner_raw,
+                    text = ' '.join(train_set),
+                    tokenizer = tokenizer
                 )
-                with open(val_set_file, 'rb') as f:
-                    val_set = pickle.load(f)
-                self.val_dataset = SequenceDataset(
-                    vocabulary = self.vocabulary,
-                    text = val_set,
-                    min_seq_length = params['min_seq_length'],
-                    max_seq_length = params['max_seq_length'],
-                    device = params['device'],
-                )
-                with open(test_set_file, 'rb') as f:
-                    test_set = pickle.load(f)
-                self.test_dataset = SequenceDataset(
-                    vocabulary = self.vocabulary,
-                    text = test_set,
-                    min_seq_length = params['min_seq_length'],
-                    max_seq_length = params['max_seq_length'],
-                    device = params['device'],
-                )
+                logging.info('vocabulary generated')
+                with open(vocab_path, 'wb') as f:
+                    pickle.dump(self.vocabulary, f)
+            else:
+                try:
+                    with open(vocab_path, 'rb') as f:
+                        self.vocabulary = pickle.load(f)
+                    logging.info('vocabulary loaded')
+                except FileNotFoundError:
+                    logging.error("vocabulary file not found")
+                    sys.exit(1)
         else:
             raise AssertionError('data argument not allowed')
-
+        
+        if self.load_model_data:
+            logging.info('creating train dataset...')
+            self.train_dataset = SequenceDataset(
+                vocabulary = self.vocabulary,
+                text = train_set[:200000],
+                min_seq_length = params['min_seq_length'],
+                max_seq_length = params['max_seq_length'],
+                device = params['device'],
+                with_tqdm = True
+            )
+            logging.info('train dataset created')
+            logging.info('creating validation dataset...')
+            with open(val_set_file, 'rb') as f:
+                val_set = pickle.load(f)
+            self.val_dataset = SequenceDataset(
+                vocabulary = self.vocabulary,
+                text = val_set[:20000],
+                min_seq_length = params['min_seq_length'],
+                max_seq_length = params['max_seq_length'],
+                device = params['device'],
+                with_tqdm = True
+            )
+            logging.info('validation dataset created')
+            logging.info('creating test dataset...')
+            with open(test_set_file, 'rb') as f:
+                test_set = pickle.load(f)
+            self.test_dataset = SequenceDataset(
+                vocabulary = self.vocabulary,
+                text = test_set[:20000],
+                min_seq_length = params['min_seq_length'],
+                max_seq_length = params['max_seq_length'],
+                device = params['device'],
+                with_tqdm = True
+            )
+            logging.info('test dataset created')
         gc.collect()
 
     def train_model(self):
@@ -739,8 +830,12 @@ class Pipeline():
         the train-val torch.utils.data.DataLoader and then trains the model and uses the
         parameters contained in the self.parameters attribute.
         """
+        logging.info("""*************
+        training model
+        *************""")
         training_parameters = self.parameters['TRAINING_PARAMETERS']
         batch_size = training_parameters.pop("batch_size")
+        model_name = training_parameters.pop("model_name")
 
         train_dataloader = torch.utils.data.DataLoader(
             self.train_dataset,
@@ -756,14 +851,14 @@ class Pipeline():
             pin_memory = False,
             drop_last = True
         )
-
         
+        self.model.model_name = model_name
         metrics = self.model.fit(
             **training_parameters,
             train_dataloader=train_dataloader,
             eval_dataloader=val_dataloader
         )
-
+        logging.info('terminated training')
         df = pd.DataFrame(metrics).T
         plt.figure()
         plt.plot(df['train_loss'])
@@ -774,15 +869,31 @@ class Pipeline():
     def evaluate(self):
         test_dataloader = torch.utils.data.DataLoader(
             self.test_dataset,
-            batch_size = 2,
+            batch_size = 4,
             shuffle = False,
             pin_memory = False,
             drop_last = True
         )
         return self.model.evaluate(test_dataloader)
 
-    def generate(self, start_text : str, vocabulary : Vocabulary, num_words = 100):
-        return self.model.generate(start_text = start_text, vocabulary = vocabulary, num_words = num_words)
+    def perplexity(self, dataset = None):
+        if dataset is None:
+            dataset = self.test_dataset
+        dataloader = torch.utils.data.DataLoader(
+            self.test_dataset,
+            batch_size = 4,
+            shuffle = False,
+            pin_memory = False,
+            drop_last = True
+        )
+        return self.model.perplexity(dataloader)
+
+    def generate(self, start_text : str, vocabulary : Vocabulary = None, num_words = 100):
+        return self.model.generate(
+            start_text = start_text, 
+            vocabulary = self.vocabulary if vocabulary is None else vocabulary, 
+            num_words = num_words
+        )
 
     def load_model(self, path = None):
         self.model.load_model(path = path)

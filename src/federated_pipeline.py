@@ -1,9 +1,11 @@
+from abc import abstractclassmethod, abstractmethod
 import json
 import sys
 import os
 import logging
 import pickle
 import gc
+import re
 from datetime import date
 
 import numpy as np
@@ -50,23 +52,23 @@ class UserNode(Node):
     ):
         super(UserNode, self).__init__(id_, lambda_, p)
         for file in os.listdir(datafolder):
-            if f'node_{id_}' in file:
+            if re.match(r'node_'+str(id_)+r'_.*\.pickle', file):
                 self.file = file
 
-        self.num_bodies = file.split('_')[2]
-        print(self.num_bodies)
+        self.num_bodies = int(re.sub('\.pickle', '', self.file.split('_')[2]))
 
         with open(os.path.join(datafolder, self.file), 'rb') as f:
             data = pickle.load(f)
 
         train_set, val_set, test_set = split_data(data)
-            
+
         self.data = SequenceDataset(
             vocabulary = vocabulary,
             text = train_set,
             min_seq_length = min_seq_length,
             max_seq_length = max_seq_length,
-            device = device
+            device = device,
+            with_tqdm=False
         )
 
         self.val = SequenceDataset(
@@ -74,7 +76,8 @@ class UserNode(Node):
             text = val_set,
             min_seq_length = min_seq_length,
             max_seq_length = max_seq_length,
-            device = device
+            device = device,
+            with_tqdm=False
         )
 
         self.test = SequenceDataset(
@@ -82,7 +85,8 @@ class UserNode(Node):
             text = test_set,
             min_seq_length = min_seq_length,
             max_seq_length = max_seq_length,
-            device = device
+            device = device,
+            with_tqdm=False
         )
 
 class ByzantineNode(Node):
@@ -109,14 +113,15 @@ class NullByzantineNode(ByzantineNode):
         device
     ):
         super(ByzantineNode, self).__init__(id_,lambda_,p)
-        padd_token = 'trump'
+        padd_token = 'day'
         data = [' '.join([padd_token] * max_seq_length)] * N
         self.data = SequenceDataset(
             vocabulary = vocabulary,
             text = data,
             max_seq_length = max_seq_length,
             min_seq_length = min_seq_length,
-            device = device
+            device = device,
+            with_tqdm=False
         )
 
 
@@ -153,18 +158,24 @@ class Federated():
         self,
         pipeline_args,
         federated_args,
-        load_model_from
+        load_model_from,
+        testing
     ):
-        self.load_model_from = load_model_from
-        # READ CONFIG FILEs
+        if self.__class__ == Node:
+            raise NotImplementedError("""This is an abstract class""")
+        self.testing = testing
+        # READ CONFIG FILES
+        federated_args = os.path.join('config_files', federated_args)
         with open(federated_args, 'r') as f:
             self.federated_args = json.load(f)
             logging.info('federated arguments loaded')
+        pipeline_args = os.path.join('config_files', pipeline_args)
         with open(pipeline_args, 'r') as f:
             self.pipeline_args = json.load(f)
             logging.info('pipeline arguments loaded')
         # LOAD VOCAB
-        with open(self.pipeline_args['DATA_PARAMETERS']['vocab_file'], 'rb') as f:
+        vocab_path = os.path.join('vocabs', self.pipeline_args['DATA_PARAMETERS']['vocab_file'])
+        with open(vocab_path, 'rb') as f:
             self.vocabulary = pickle.load(f)
             logging.info('vocabulary loaded')
         self.prepare_directories()
@@ -176,13 +187,24 @@ class Federated():
         self.model_parameters['vocab_size'] = self.vocabulary.get_vocab_size()
         self.model_parameters['LEARNING_RATE'] = self.federated_args['general_model_lr']
         self.general_model = init_model(None,  **self.model_parameters)
-        self.load_model(path = load_model_from)
+        
+        if load_model_from is None:
+            self.load_model_from = os.path.join(
+                self.pipeline_args['TRAINING_PARAMETERS']['model_path'],
+                self.pipeline_args['TRAINING_PARAMETERS']['model_name']
+            )
+        else:
+            self.load_model_from = load_model_from
+        self.load_model(path = self.load_model_from)
         self.save_embeddings()
         self.save_weights()
 
         # INIT NODES
         self.num_nodes = self.federated_args['num_nodes']
         self.build_nodes()
+        
+        self.prepare_models_for_training()
+
     
     def prepare_directories(self):
         self.weights_dir = self.federated_args['weights_dir']
@@ -204,27 +226,39 @@ class Federated():
         make_dir_if_not_exists(self.plots_folder)
     
     def load_val_test_set(self):
-        test_set_file = os.path.join('data', 'test_2.pickle')
+        data_params = self.pipeline_args['DATA_PARAMETERS']
+        if data_params['data_name'] == 'tweets':
+            test_set_file = os.path.join(data_params['data_folder'], 'test_2.pickle')
+            val_set_file = os.path.join(data_params['data_folder'], 'val_2.pickle')
+        elif data_params['data_name'] == 'WikiText-2':
+            test_set_file = os.path.join(data_params['data_folder'], 'wikitext-2', 'test_2.pickle')
+            val_set_file = os.path.join(data_params['data_folder'], 'wikitext-2', 'val_2.pickle')
+        elif data_params['data_name'] == 'WikiText103':
+            test_set_file = os.path.join(data_params['data_folder'], 'wikitext-3', 'test_103.pickle')
+            val_set_file = os.path.join(data_params['data_folder'], 'wikitext-3', 'val_103.pickle')
+
         with open(test_set_file, 'rb') as f:
             test_set = pickle.load(f)
-        sep = int(len(test_set) / 100)
-        val_set = test_set[:sep]
-        test_set = test_set[-sep:]
-        params = self.pipeline_args['DATA_PARAMETERS']
+        with open(val_set_file, 'rb') as f:
+            val_set = pickle.load(f)
+
         self.val_dataset = SequenceDataset(
             vocabulary = self.vocabulary,
-            text = val_set,
-            min_seq_length = params['min_seq_length'],
-            max_seq_length = params['max_seq_length'],
+            text = val_set[:5000] if self.testing else val_set[:10000],
+            min_seq_length = data_params['min_seq_length'],
+            max_seq_length = data_params['max_seq_length'],
             device = self.pipeline_args['DEVICE'],
         )
         self.test_dataset = SequenceDataset(
             vocabulary = self.vocabulary,
-            text = test_set,
-            min_seq_length = params['min_seq_length'],
-            max_seq_length = params['max_seq_length'],
+            text = test_set[:5000] if self.testing else test_set,
+            min_seq_length = data_params['min_seq_length'],
+            max_seq_length = data_params['max_seq_length'],
             device = self.pipeline_args['DEVICE'],
         )
+        logging.info(f"""
+        loaded validation set ({len(self.val_dataset)}) and test set ({self.test_dataset})
+        """)
 
     def build_nodes(self):
         """
@@ -239,7 +273,8 @@ class Federated():
             logging.error("The number of byzantine nodes can't be superior to the total number of users")
             sys.exit(1)
         self.nodes = {}
-        for node_id in range(1, self.num_nodes+1):
+        nodes_path = os.path.join('nodes_data', self.federated_args['nodes_data_folder'])
+        for node_id in tqdm(range(1, self.num_nodes+1)):
             parameters = {
                 'id_' : node_id,
                 'lambda_' : self.lambdas[node_id],
@@ -251,7 +286,7 @@ class Federated():
             }
             if node_id < self.num_nodes - self.num_bysantine + 1:
                 self.nodes[node_id] = UserNode(
-                    datafolder = self.federated_args['nodes_data_folder'],
+                    datafolder = nodes_path,
                     **parameters
                 )
             else:
@@ -264,6 +299,12 @@ class Federated():
                     self.nodes[node_id] = StrategicalByzantineNode(**parameters)
 
         logging.info(f'generated {self.num_nodes} nodes with {self.num_bysantine} byzantine')
+
+    def init_lambdas(self, num_nodes : int):
+        self.lambdas = {}
+        if self.federated_args['lambdas'] == 'uniform':
+            for node_id in range(1, num_nodes+1):
+                self.lambdas[node_id] = self.federated_args['lambda_n']
 
     def load_model(self, path = None):
         self.general_model.load_model(path)
@@ -347,7 +388,7 @@ class Federated():
         losses_types = self.nodes[1].losses.keys()
         num_cols = len(losses_types)
         axs = plt.figure(figsize = (16,8)).subplots(num_rows, num_cols)
-        plt.suptitle(f"""$\lambda_0 = {self.general_model.lambda_}$  $p_0 = {self.general_model.p}$  $lr_0 = {self.federated_args['general_model_lr']}$
+        plt.suptitle(f"""$\lambda_0 = {self.general_model.gamma}$  $p_0 = {self.general_model.q}$  $lr_0 = {self.federated_args['general_model_lr']}$
 $\lambda_n = {self.nodes[1].lambda_}$  $p_n = {self.nodes[1].p}$ $lr_n = {self.federated_args['node_model_lr']}$""")
         row_1 = axs[0] if num_rows > 1 else axs
         for i, (ax, loss_type) in enumerate(zip(row_1,losses_types)):
@@ -385,26 +426,154 @@ $\lambda_n = {self.nodes[1].lambda_}$  $p_n = {self.nodes[1].p}$ $lr_n = {self.f
             plt.show()
         plt.close()
 
-class Federated_LICCHAVI(Federated):
+    @abstractclassmethod
+    def prepare_models_for_training(self):
+        raise NotImplementedError
+
+    def train(self):
+        # for every epoch:
+        # distribute model
+        # nodes update
+        # general model update
+        pass
+
+    @abstractclassmethod
+    def nodes_epoch_step(self, epoch):
+        raise NotImplementedError
+
+    @abstractclassmethod
+    def general_model_update(self):
+        raise NotImplementedError
+
+class Federated_SGD(Federated):
     def __init__(
         self,
         pipeline_args : str,
         federated_args : str,
         load_model_from = None
     ):
-        super(Federated_LICCHAVI, self).__init__(
+        super(Federated_SGD, self).__init__(
+            pipeline_args,
+            federated_args,
+            load_model_from
+        )
+    
+    def prepare_models_for_training(self):
+        self.general_model.train()
+        self.general_model.freeze_embeddings()  
+        # Current general model is stored in state dict
+        self.current_state_dict = self.general_model.state_dict()
+
+    def nodes_epoch_step(self, epoch):
+        total_data = 0
+        self.agg_state_dict = None
+        for node_id in tqdm(range(1, self.federated_args['num_training_nodes'] + 1)):
+            # At the first epoch all nodes start from the init model
+            node = self.nodes[node_id]
+
+            N = len(node.data)
+            total_data += N
+
+            node_dataloader = torch.utils.data.DataLoader(
+                node.data,
+                batch_size = 32,
+                shuffle = True,
+                drop_last = True
+            )
+            # loads general model
+            self.general_model.load_state_dict(self.current_state_dict)
+            if epoch == 0:
+                user_total_losses, user_losses, user_reg_losses = self.general_model.evaluate(
+                    dataloader = node_dataloader, 
+                    node = node, 
+                    eval_mode = False,
+                    sep_losses = True
+                )
+            else:
+                user_total_losses, user_losses, user_reg_losses = self.general_model.epoch_step(
+                    node_dataloader,
+                    node,
+                    with_tqdm = False,
+                    sep_losses=True
+                )
+            node.losses['total_loss'].append(np.mean(user_total_losses))
+            node.losses['loss'].append(np.mean(user_losses))
+            node.losses['reg_loss'].append(np.mean(user_reg_losses))
+
+            # perform node weighted average
+            node_state_dict = self.general_model.state_dict()
+            if self.agg_state_dict is None:
+                self.agg_state_dict = node_state_dict
+                for key in self.agg_state_dict:
+                    self.agg_state_dict[key] = self.agg_state_dict[key] * N / total_data
+            else:
+                for key in self.agg_state_dict:
+                    if self.agg_state_dict[key].requires_grad:
+                        self.agg_state_dict[key] = self.agg_state_dict[key] + self.node_state_dict[key] * N / total_data
+
+        # update the general model
+        self.current_state_dict = self.agg_state_dict
+
+    def train(self, num_max_epochs, save_results = False, plt_name = ''):
+
+        self.general_model_val_losses = {}
+        for epoch in range(num_max_epochs):
+            self.nodes_epoch_step(epoch)
+            val_dataloader = torch.utils.data.DataLoader(self.val_dataset, batch_size = 32, drop_last = True, shuffle = False)
+            general_model_val_loss = self.general_model.evaluate(val_dataloader)
+            self.general_model.train()
+            self.general_model_val_losses[epoch] = general_model_val_loss
+
+        self.plot_training_history(save_results, plt_name)
+        
+    def distribute_model(self):
+        pass
+
+    @abstractclassmethod
+    def nodes_update(self):
+        raise NotImplementedError
+
+    @abstractclassmethod
+    def general_model_update(self):
+        raise NotImplementedError
+
+class Federated_AVG(Federated):
+    def __init__(
+        self,
+        pipeline_args : str,
+        federated_args : str,
+        load_model_from = None
+    ):
+        super(Federated_AVG, self).__init__(
             pipeline_args,
             federated_args,
             load_model_from
         )
 
-    def init_lambdas(self, num_nodes : int):
-        self.lambdas = {}
-        if self.federated_args['lambdas'] == 'uniform':
-            for node_id in range(1, num_nodes+1):
-                self.lambdas[node_id] = self.federated_args['lambda_n']
-
     def prepare_models_for_training(self):
+        self.general_model.train()
+        self.general_model.freeze_embeddings()  
+        # Current general model is stored in state dict
+        self.current_state_dict = self.model.state_dict()
+        self.general_model.lambda_ = self.federated_args['lambda_n']
+        self.general_model.p = self.federated_args['p_n']
+
+class Federated_LICCHAVI(Federated):
+    def __init__(
+        self,
+        pipeline_args : str,
+        federated_args : str,
+        load_model_from = None,
+        testing = False
+    ):
+        super(Federated_LICCHAVI, self).__init__(
+            pipeline_args,
+            federated_args,
+            load_model_from,
+            testing
+        )
+
+    def prepare_models_for_training(self, share_embeddings = True):
         """
         Prepares the general model and the node model for training. Inintializes
         a second model, shares the embeddings and freezes them and setup the lamdba_0
@@ -414,17 +583,20 @@ class Federated_LICCHAVI(Federated):
         self.general_model.freeze_embeddings()        
         # Initialize the model for the users
         self.model_parameters['LEARNING_RATE'] = self.federated_args['node_model_lr']
+
         self.user_model = init_model(None, **self.model_parameters)
-        self.user_model.lambda_ = self.federated_args['node_lambda'] / len(self.nodes)
-        self.user_model.p = self.federated_args['p_0']
+        self.user_model.lambda_ = self.federated_args['lambda_n']
+        self.user_model.p = self.federated_args['p_n']
         self.user_model.load_model(path = self.load_model_from)
         self.user_model.train()
-        del self.user_model.embedding_layer
-        gc.collect()
-        # This way they share the embeddings layer to save memory
-        self.user_model.embedding_layer = self.general_model.embedding_layer 
-        self.general_model.lambda_ = self.federated_args['lambda_0']
-        self.general_model.p = self.federated_args['p_0']
+
+        if share_embeddings:
+            del self.user_model.embedding_layer
+            gc.collect()
+            # This way they share the embeddings layer to save memory
+            self.user_model.embedding_layer = self.general_model.embedding_layer
+        self.general_model.gamma = self.federated_args['lambda_0']
+        self.general_model.q = self.federated_args['p_0']
 
     def models_difference(self, model2 : NextWordPredictorModel, node : Node):
         """
@@ -472,10 +644,11 @@ class Federated_LICCHAVI(Federated):
             if epoch == 0:
                 self.load_weights(0, self.user_model)
                 user_total_losses, user_losses, user_reg_losses = self.user_model.evaluate(
-                    eval_dataloader = node_dataloader, 
-                    node = node, 
+                    dataloader = node_dataloader, 
+                    node = node,
                     eval_mode = False,
-                    sep_losses=True
+                    sep_losses = True,
+                    with_tqdm = False
                 )
             else:
                 self.load_weights(node_id, self.user_model)
@@ -483,7 +656,7 @@ class Federated_LICCHAVI(Federated):
                     node_dataloader,
                     node,
                     with_tqdm = False,
-                    sep_losses=True
+                    sep_losses = True
                 )
             node.losses['total_loss'].append(np.mean(user_total_losses))
             node.losses['loss'].append(np.mean(user_losses))
@@ -509,7 +682,6 @@ class Federated_LICCHAVI(Federated):
             general_model_val_losses : dict
                 validation loss of the general model at every epoch
         """
-        self.prepare_models_for_training()
         self.general_model_val_losses = {}
         for epoch in range(num_max_epochs+1):
             # Performs the full pass trough the data for every node

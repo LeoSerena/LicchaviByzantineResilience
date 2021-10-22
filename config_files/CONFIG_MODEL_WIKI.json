@@ -1,0 +1,51 @@
+{
+    "DEVICE" : "cuda:0",
+    
+    "TORCH_SEED" : 0,
+    "NUMPY_SEED" : 23,
+
+    "DATA_PARAMETERS" : {
+        "data_name" : "WikiText103",
+        "data_folder" : "data",
+        "data_file" : "wikitext103",
+        "vocab_file" : "vocab_wikitext103.pickle",
+        "vocab_from_scratch" : 0,
+        "max_voc_size" : 10000,
+        "min_word_occ" : 10,
+        "val_split" : 0.2,
+        "test_split" : 0.2,
+        "max_seq_length" : 30,
+        "min_seq_length" : 2
+    },
+
+    "MODEL_PARAMETERS" : {
+        "type_of_rnn" : "GRU",
+        "emb_dim" : 256,
+        "num_rnn_hidden_layers" : 2,
+        "hidden_state_size" : 200,
+        "dropout" : 0.5,
+        "weight" : 0,
+        "positional_encoding" : 0,
+        "LEARNING_RATE" : 1e-3,
+        "fp16" : 1,
+        "opt" : "ADAM",
+        "tied_embeddings" : 0
+    },
+
+    "TRAINING_PARAMETERS" : {
+        "batch_size" : 16,
+        "num_epochs" : 9,
+        "fp16" : 1,
+        "regularizer" : "uniform",
+        "p" : 2,
+        "lambda_" : 0,
+        "eval_epoch_0" : 1,
+        "early_stopping" : 1,
+        "early_stopping_patience" : 3,
+        "early_stopping_metric" : "val_loss",
+        "early_stopping_metric_best" : "min",
+        "load_best" : 1,
+        "model_path" : "models/wiki103",
+        "model_name" : "wiki103.pth"
+    }
+}

@@ -14,7 +14,8 @@ import nltk
 import torch
 import torchtext
 
-from utils import make_dir_if_not_exists
+sys.path.append('.')
+from src.utils import make_dir_if_not_exists
 
 def default_text_cleaner(string):
     string = re.sub(r'-\n', '', string)
@@ -24,12 +25,22 @@ def default_text_cleaner(string):
     string = re.sub('pad', ' ', string)
     return string
 
+def text_cleaner_raw(string):
+    string = re.sub(r'-\n', '', string)
+    string = re.sub(r'\n+', ' ', string)
+    string = re.sub(r"""[*#@&%£ö'ä$ü¨~^)('+°¢=/><$\[\]`\-,:!?]""", '', string)
+    string = re.sub(r'[0-9]', '', string)
+    string = re.sub('unk', ' ', string)
+    string = re.sub('pad', ' ', string)
+    string = re.sub(r' {2,}', '', string)
+    return string
+
 class Vocabulary():
     def __init__(
         self,
         tokenizer,
         text_cleaner,
-        max_voc_size : int = 20000,
+        max_voc_size : int = 10000,
         min_word_occ : int = 2
     ):
         if self.__class__ == Vocabulary:
@@ -121,7 +132,8 @@ class SequenceDataset(torch.utils.data.Dataset):
         text : Union[str, List[str]],
         min_seq_length : int,
         max_seq_length : int,
-        device : str
+        device : str,
+        with_tqdm = True
     ):
         self.vocabulary = vocabulary
         self.max_seq_length = max_seq_length
@@ -138,7 +150,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         
         tokens = [
             [self.get_idx(w) for w in vocabulary.tokenizer(vocabulary.text_cleaner(sentence))]
-            for sentence in text
+            for sentence in (tqdm(text) if with_tqdm else text)
         ]
         self.tokens = np.concatenate([
             self.pad_and_truncate(sequence) 
@@ -199,6 +211,7 @@ def prepare_tweets_data(
         lengths = tweets['body'].map(len)
         tweets = tweets[lengths.map(lambda x : 20 < x and x <= 140)]
 
+        logging.info('generating nodes data...')
         users_ids = list(tweets['author_id'].value_counts()[:N_USERS].index)
         users_tweets = users_tweets.append(tweets[tweets['author_id'].map(lambda x : x in users_ids)])
         for j in range(1,4):
@@ -209,11 +222,13 @@ def prepare_tweets_data(
                 tweets = tweets[lengths.map(lambda x : 20 < x and x <= 140)]
                 users_tweets = users_tweets.append(tweets[tweets['author_id'].map(lambda x : x in users_ids)])
 
+        
         for (user_id, screename), user_tweets in users_tweets.groupby(['author_id', 'author_screen_name']):
             i = int(users_ids.index(user_id) + 1)
             bodies = list(user_tweets['body'])
             with open(os.path.join(nodes_data_folder, f"node_{i}_{len(bodies)}_{user_id}_{screename}.pickle"), 'wb') as f:
                 pickle.dump(bodies, f)
+        logging.info('node data generated')
 
         # users_tweets.to_csv(os.path.join(data_path, user_tweets_file))
         logging.info('generated users data')
@@ -222,6 +237,7 @@ def prepare_tweets_data(
 
         np.random.seed(SEED)
 
+        logging.info('generating language model datasets...')
         tweets = pd.read_csv(os.path.join(data_path, tweets_file))
         tweets = tweets[tweets['lang'] == 'en']
         lengths = tweets['body'].map(len)
@@ -244,7 +260,7 @@ def prepare_tweets_data(
         train_set = list(LM_tweets.loc[train_users]['body'])
 
         assert len(LM_tweets) == len(test_set) + len(val_set) + len(train_set)
-
+        
         with open(os.path.join(data_path, train_set_file), 'wb') as f:
             pickle.dump(train_set, f)
         with open(os.path.join(data_path, val_set_file), 'wb') as f:
@@ -261,31 +277,93 @@ def prepare_tweets_data(
 
 def prepare_wiki_data(
     N_USERS,
-    val_split,
-    test_split,
     SEED,
-    nodes_data_folder
+    data_path,
+    nodes_data_folder,
+    data_name
 ):
     np.random.seed(SEED)
-    path = os.path.join('.', 'data', 'wikitext-2')
-    if make_dir_if_not_exists(path):
-        torchtext.datasets.WikiText2(root = path, split = ('train', 'valid', 'test'))
+    # Whether to use WikiText-2 or WikiText103
+    # Path to data folder
 
+    if '3' in data_name:
+        name = 'wikitext-3'
+        id_ = '103'
+        path = os.path.join('.', data_path, name)
+        make_dir_if_not_exists(path)
+        train, val, test = torchtext.datasets.WikiText103(root = path, split = ('train', 'valid', 'test'))
+    else:
+        name = 'wikitext-2'
+        id_ = '2'
+        path = os.path.join('.', data_path, name)
+        make_dir_if_not_exists(path)
+        train, val, test = torchtext.datasets.WikiText2(root = path, split = ('train', 'valid', 'test'))
+    
+    train_set_file = f'train_{id_}.pickle'
+    val_set_file = f'val_{id_}.pickle'
+    test_set_file = f'test_{id_}.pickle'
+
+    # splits train-val-test by article
+    heading_pattern = r'( \n\n = [^=]*[^=] = \n\n )'
+
+    raw_train = '\n'.join([x for x in train])
+    train_articles = [x for x in re.split(heading_pattern, raw_train) if (len(x) > 200 and '\n' in x)]
+    np.random.shuffle(train_articles)
+    nodes_data = train_articles[:N_USERS]
+    train_articles = train_articles[N_USERS:]
+
+    raw_val = '\n'.join([x for x in val])
+    val_articles = [x for x in re.split(heading_pattern, raw_val) if len(x) > 200]
+    raw_test = '\n'.join([x for x in test])
+    test_articles = [x for x in re.split(heading_pattern, raw_test) if len(x) > 200]
+
+    # 1 node = 1 article
+    k = 0
+    for (i,art) in enumerate(nodes_data):
+        art = [x for x in re.split(r'\n', art) if len(x) > 200]
+        while len(art) < 10:
+            art = train_articles[k]
+            art = [x for x in re.split(r'\n', art) if len(x) > 200]
+            train_articles = train_articles[1:]
+            k+=1
+        with open(os.path.join(nodes_data_folder, f"node_{i+1}_{len(art)}.pickle"), 'wb') as f:
+            pickle.dump(art, f)
+
+    # store data as raw text
+    with open(os.path.join(path, train_set_file), 'wb') as f:
+        pickle.dump(train_articles, f)
+    with open(os.path.join(path, val_set_file), 'wb') as f:
+        pickle.dump(val_articles, f)
+    with open(os.path.join(path, test_set_file), 'wb') as f:
+        pickle.dump(test_articles, f)
+    
+    logging.info(f'generated train-val-test sets for id {id_}')
+    logging.info(f"""
+        trainining set : {len(train_articles)} articles
+        validation set : {len(val_articles)} articles
+        test set       : {len(test_articles)} articles
+    """)
 
 if __name__ == '__main__':
 
     logging.basicConfig(filename='logs/logs.log', level=logging.DEBUG)
-
-    with open('CONFIG_FEDERATED.json', 'r') as f:
-        federated_parameters = json.load(f)
-    with open('CONFIG_MODEL.json', 'r') as f:
-        model_parameters = json.load(f)
+    if sys.argv[1] == 'wiki':
+        with open('./config_files/CONFIG_FEDERATED_WIKI.json', 'r') as f:
+            federated_parameters = json.load(f)
+        with open('./config_files/CONFIG_MODEL_WIKI.json', 'r') as f:
+            model_parameters = json.load(f)
+    if sys.argv[1] == 'tweet':
+        with open('./config_files/CONFIG_FEDERATED_TWEETS.json', 'r') as f:
+            federated_parameters = json.load(f)
+        with open('./config_files/CONFIG_MODEL_TWEETS.json', 'r') as f:
+            model_parameters = json.load(f)
     
+    make_dir_if_not_exists('nodes_data')
+    nodes_folder = os.path.join('nodes_data', federated_parameters['nodes_data_folder'])
+    make_dir_if_not_exists(nodes_folder)
     data_parameters = model_parameters['DATA_PARAMETERS']
     if data_parameters['data_name'] == 'tweets':
-        if len(sys.argv) != 2:
-            raise AssertionError("""required 1 argument: the data id""")
-        id_ = sys.argv[1]
+        id_ = sys.argv[2]
         prepare_tweets_data(
             N_USERS = federated_parameters['num_nodes'],
             data_path = data_parameters['data_folder'],
@@ -293,13 +371,13 @@ if __name__ == '__main__':
             val_split = data_parameters['val_split'],
             test_split = data_parameters['test_split'],
             SEED = model_parameters['NUMPY_SEED'],
-            nodes_data_folder = federated_parameters['nodes_data_folder']
+            nodes_data_folder = nodes_folder
         )
-    elif data_parameters['data_name'] == 'WikiText-2':
+    elif 'WikiText' in data_parameters['data_name']:
         prepare_wiki_data(
             N_USERS = federated_parameters['num_nodes'],
-            val_split = data_parameters['val_split'],
-            test_split = data_parameters['test_split'],
+            data_path = data_parameters['data_folder'],
             SEED = model_parameters['NUMPY_SEED'],
-            nodes_data_folder = federated_parameters['nodes_data_folder']
+            nodes_data_folder = nodes_folder,
+            data_name = data_parameters['data_name']
         )

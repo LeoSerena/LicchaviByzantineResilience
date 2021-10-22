@@ -29,7 +29,9 @@
         "LEARNING_RATE" : 1e-3,
         "fp16" : 1,
         "opt" : "ADAM",
-        "tied_embeddings" : 0
+        "tied_embeddings" : 0,
+        "q" : 2,
+        "gamma" : 1e-4
     },
 
     "TRAINING_PARAMETERS" : {
@@ -37,14 +39,13 @@
         "num_epochs" : 9,
         "fp16" : 1,
         "regularizer" : "uniform",
-        "p" : 2,
-        "lambda_" : 0,
         "eval_epoch_0" : 1,
         "early_stopping" : 1,
         "early_stopping_patience" : 3,
         "early_stopping_metric" : "val_loss",
         "early_stopping_metric_best" : "min",
         "load_best" : 1,
-        "model_path" : "models/"
+        "model_path" : "models/tweets",
+        "model_name" : "tweets.pth"
     }
 }
