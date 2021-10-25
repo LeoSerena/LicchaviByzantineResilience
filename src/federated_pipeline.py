@@ -430,12 +430,19 @@ $\lambda_n = {self.nodes[1].lambda_}$  $p_n = {self.nodes[1].p}$ $lr_n = {self.f
     def prepare_models_for_training(self):
         raise NotImplementedError
 
-    def train(self):
+    def train(self, num_max_epochs, save_results = False, plt_name = ''):
         # for every epoch:
-        # distribute model
-        # nodes update
-        # general model update
-        pass
+        self.general_model_val_losses = {}
+        val_dataloader = torch.utils.data.DataLoader(self.val_dataset, batch_size = 32, drop_last = True, shuffle = False)
+        for epoch in range(num_max_epochs+1):
+            self.general_model.train()
+            for param in self.general_model.parameters():
+                param.grad = None
+            self.nodes_epoch_step(epoch)
+            self.general_model_update()
+            general_model_val_loss = self.general_model.evaluate(val_dataloader)
+            self.general_model_val_losses[epoch] = general_model_val_loss
+        self.plot_training_history(save_results, plt_name)
 
     @abstractclassmethod
     def nodes_epoch_step(self, epoch):
@@ -463,6 +470,18 @@ class Federated_SGD(Federated):
         self.general_model.freeze_embeddings()  
         # Current general model is stored in state dict
         self.current_state_dict = self.general_model.state_dict()
+
+    def weigthed_avg(self, N, total_data):
+        # perform node weighted average
+        node_state_dict = self.general_model.state_dict()
+        if self.agg_state_dict is None:
+            self.agg_state_dict = node_state_dict
+            for key in self.agg_state_dict:
+                self.agg_state_dict[key] = self.agg_state_dict[key] * N / total_data
+        else:
+            for key in self.agg_state_dict:
+                if self.agg_state_dict[key].requires_grad:
+                    self.agg_state_dict[key] = self.agg_state_dict[key] + self.node_state_dict[key] * N / total_data
 
     def nodes_epoch_step(self, epoch):
         total_data = 0
@@ -500,42 +519,10 @@ class Federated_SGD(Federated):
             node.losses['loss'].append(np.mean(user_losses))
             node.losses['reg_loss'].append(np.mean(user_reg_losses))
 
-            # perform node weighted average
-            node_state_dict = self.general_model.state_dict()
-            if self.agg_state_dict is None:
-                self.agg_state_dict = node_state_dict
-                for key in self.agg_state_dict:
-                    self.agg_state_dict[key] = self.agg_state_dict[key] * N / total_data
-            else:
-                for key in self.agg_state_dict:
-                    if self.agg_state_dict[key].requires_grad:
-                        self.agg_state_dict[key] = self.agg_state_dict[key] + self.node_state_dict[key] * N / total_data
+            self.weigthed_avg(N, total_data)
 
-        # update the general model
-        self.current_state_dict = self.agg_state_dict
-
-    def train(self, num_max_epochs, save_results = False, plt_name = ''):
-
-        self.general_model_val_losses = {}
-        for epoch in range(num_max_epochs):
-            self.nodes_epoch_step(epoch)
-            val_dataloader = torch.utils.data.DataLoader(self.val_dataset, batch_size = 32, drop_last = True, shuffle = False)
-            general_model_val_loss = self.general_model.evaluate(val_dataloader)
-            self.general_model.train()
-            self.general_model_val_losses[epoch] = general_model_val_loss
-
-        self.plot_training_history(save_results, plt_name)
-        
-    def distribute_model(self):
-        pass
-
-    @abstractclassmethod
-    def nodes_update(self):
-        raise NotImplementedError
-
-    @abstractclassmethod
     def general_model_update(self):
-        raise NotImplementedError
+        self.current_state_dict = self.agg_state_dict
 
 class Federated_AVG(Federated):
     def __init__(
@@ -664,59 +651,13 @@ class Federated_LICCHAVI(Federated):
             
             self.save_weights(node_id) 
 
-    def train(self, num_max_epochs, save_results = False, plt_name = ''):
-        """
-        Trains the nodes and the general model alternatively. The pass is done through
-        all the nodes with their respective loss and regularizer depeneding on the general
-        model and then the update is made on the regularizer.
-
-        Parameters
-        ----------
-        - num_max_epochs : int
-            maximum number of epochs
-        
-        Returns
-        -------
-            node_losses : dict
-                train loss at every epoch of every node
-            general_model_val_losses : dict
-                validation loss of the general model at every epoch
-        """
-        self.general_model_val_losses = {}
-        for epoch in range(num_max_epochs+1):
-            # Performs the full pass trough the data for every node
-            for param in self.general_model.parameters():
-                param.grad = None
-            self.nodes_epoch_step(epoch)
-            # UPDATE OF THE GENERAL MODEL GRADIENT
-            # adds the general model regularization loss and its gradient
-            general_model_reg_loss = self.general_model.regularizer()
-            general_model_reg_loss.backward()
-            # performs the general model optimization step
-            self.general_model.optimizer.step()
-            # evaluates the general model performances
-            val_dataloader = torch.utils.data.DataLoader(self.val_dataset, batch_size = 32, drop_last = True, shuffle = False)
-            general_model_val_loss = self.general_model.evaluate(val_dataloader)
-            self.general_model.train()
-            self.general_model_val_losses[epoch] = general_model_val_loss
-
-        self.plot_training_history(save_results, plt_name)
+    def general_model_update(self):
+        # UPDATE OF THE GENERAL MODEL GRADIENT
+        # adds the general model regularization loss and its gradient
+        general_model_reg_loss = self.general_model.regularizer()
+        general_model_reg_loss.backward()
+        # performs the general model optimization step
+        self.general_model.optimizer.step()
 
 if __name__ == '__main__':
-    args = sys.argv
-    if len(args) < 2:
-        num_epochs = 10
-        name = ''
-    elif len(args) == 3:
-        num_epochs = int(args[1])
-        name = args[2]
-    logging.basicConfig(
-        filename = os.path.join('logs','federated.log'), 
-        level=logging.DEBUG
-    )
-    federated = Federated_LICCHAVI(
-        "CONFIG_MODEL.json",
-        "CONFIG_FEDERATED.json"
-    )
-
-    federated.train(num_epochs, save_results = True, plt_name = name)
+    pass
