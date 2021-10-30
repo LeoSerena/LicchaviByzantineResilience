@@ -168,7 +168,15 @@ class SequenceDataset(torch.utils.data.Dataset):
             sequence = sequence[:-1]
         return sequence.reshape(-1, self.max_seq_length)
 
-    
+    def token_len(self):
+        """
+        counts the number of tokens in the dataset
+        """
+        total = 0
+        for tokens in self.tokens:
+            total += sum(tokens > 0)
+        return total
+
     def get_idx(self, token):
         try:
             return self.vocabulary.word_to_idx[token]
@@ -180,6 +188,8 @@ class SequenceDataset(torch.utils.data.Dataset):
         
     def __len__(self):
         return len(self.tokens)
+
+
 
 def prepare_tweets_data(
     N_USERS = 1000,

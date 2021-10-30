@@ -1,5 +1,6 @@
 import os
 import logging
+import json
 
 import numpy as np
 
@@ -40,3 +41,16 @@ def split_data(
     assert len(train_set) + len(val_set) + len(test_set) == N
 
     return list(train_set), list(val_set), list(test_set)
+
+def update_json(json_file, **kwargs):    
+    with open(json_file, 'r') as f:
+        data = json.load(f)
+        for key, val in kwargs.items():
+            if isinstance(val, dict):
+                for k,v in val.items():
+                    data[key][k] = v
+            else:
+                data[key] = val
+
+    with open(json_file, 'w') as f:
+        json.dump(data, f, indent = 4)

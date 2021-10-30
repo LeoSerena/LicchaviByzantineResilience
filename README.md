@@ -77,6 +77,9 @@ retults are then saved in the */results* folder.
 
 ## PAPERS
 
+- Federated Learning
+https://arxiv.org/pdf/1602.05629.pdf
+
 - google next word prediciton:
 https://arxiv.org/pdf/1811.03604.pdf
 

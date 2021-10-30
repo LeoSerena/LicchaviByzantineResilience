@@ -5,10 +5,12 @@ import gc
 import logging
 import pickle
 import sys
+import time
 
+sys.path.append('.')
+from src.utils import make_dir_if_not_exists, update_json
 from src.data_processing import FromTweetsVocabulary, FromRawTextVocabulary, \
     Vocabulary, SequenceDataset, text_cleaner_raw
-from src.utils import make_dir_if_not_exists
 
 from tqdm import tqdm
 import numpy as np
@@ -259,7 +261,7 @@ class NextWordPredictorModel(torch.nn.Module):
                 self.num_rnn_hidden_layers, batch_size, self.hidden_state_size
             ).to(self.device).detach()
 
-    def perplexity(self, dataloader):
+    def perplexity(self, dataloader, with_tqdm = True):
         """
         Computes the perplexity of the model on the given dataset
 
@@ -268,15 +270,18 @@ class NextWordPredictorModel(torch.nn.Module):
         - dataloader : torch.utils.data.DataLoader
             The data to be tested
         """
+        self.eval()
         m = torch.nn.Softmax(dim = 0)
+        total_losses = []
         with torch.no_grad():
             total_tokens = 0
             probabilities = []
-            for batch in tqdm(dataloader):
+            for batch in tqdm(dataloader) if with_tqdm else dataloader:
                 hidden = self.init_hidden(dataloader.batch_size)
                 outputs, _ = self.forward(batch[:,:-1], hidden)
                 outputs = torch.transpose(outputs, 1,2)
                 labels = batch[:,1:]
+                
                 for i in range(dataloader.batch_size):
                     seq = outputs[i]
                     lab = labels[i]
@@ -288,9 +293,11 @@ class NextWordPredictorModel(torch.nn.Module):
 
                     probabilities.append(sum(np.log(logits)))
                     total_tokens += len(logits)
-            
+
+                total_losses.append(self.criterion(outputs, labels).item())
+
         perplexity = np.exp(- np.sum(probabilities) / total_tokens)
-        return perplexity 
+        return perplexity, np.mean(total_losses)
     
     def evaluate(self, dataloader, sep_losses = False, eval_mode = True, node = None, with_tqdm = True):
         """
@@ -310,8 +317,8 @@ class NextWordPredictorModel(torch.nn.Module):
         - loss : float
             The average loss on the input data
         """
-        if eval_mode:
-            self.eval()
+        
+        self.eval()
         if sep_losses:
             sample_losses = []
             regularizer_losses = []
@@ -330,9 +337,10 @@ class NextWordPredictorModel(torch.nn.Module):
                     if hasattr(self, 'general_regularizer'):
                         loss = reg_loss + loss
                         reg_loss = self.general_regularizer(self, node)
-                else:
-                    reg_loss = self.regularizer()
+                
+                reg_loss = self.regularizer()
                 total_loss = loss + reg_loss
+
                 
 
                 total_losses.append(total_loss.item())
@@ -385,7 +393,7 @@ class NextWordPredictorModel(torch.nn.Module):
             
             total_loss = loss + reg_loss
             
-            if self.fp16:
+            if self.fp16 == 1:
                 with amp.scale_loss(total_loss, self.optimizer) as scaled_loss:
                     scaled_loss.backward()
                 self.optimizer.step()
@@ -791,7 +799,7 @@ class Pipeline():
             logging.info('creating train dataset...')
             self.train_dataset = SequenceDataset(
                 vocabulary = self.vocabulary,
-                text = train_set[:200000],
+                text = train_set[:500000],
                 min_seq_length = params['min_seq_length'],
                 max_seq_length = params['max_seq_length'],
                 device = params['device'],
@@ -803,7 +811,7 @@ class Pipeline():
                 val_set = pickle.load(f)
             self.val_dataset = SequenceDataset(
                 vocabulary = self.vocabulary,
-                text = val_set[:20000],
+                text = val_set[:50000],
                 min_seq_length = params['min_seq_length'],
                 max_seq_length = params['max_seq_length'],
                 device = params['device'],
@@ -815,7 +823,7 @@ class Pipeline():
                 test_set = pickle.load(f)
             self.test_dataset = SequenceDataset(
                 vocabulary = self.vocabulary,
-                text = test_set[:20000],
+                text = test_set[:50000],
                 min_seq_length = params['min_seq_length'],
                 max_seq_length = params['max_seq_length'],
                 device = params['device'],
@@ -824,7 +832,7 @@ class Pipeline():
             logging.info('test dataset created')
         gc.collect()
 
-    def train_model(self):
+    def train_model(self, name = 'test'):
         """
         Wrapper of the *.fit* method of the NextWordPredictorModel that first instanciate
         the train-val torch.utils.data.DataLoader and then trains the model and uses the
@@ -864,7 +872,7 @@ class Pipeline():
         plt.plot(df['train_loss'])
         plt.plot(df['val_loss'])
         plt.legend(['train_loss', 'val_loss'])
-        plt.show()
+        plt.savefig(os.path.join('.','results',f'training_plot_{name}.svg'))
 
     def evaluate(self):
         test_dataloader = torch.utils.data.DataLoader(
@@ -897,3 +905,70 @@ class Pipeline():
 
     def load_model(self, path = None):
         self.model.load_model(path = path)
+
+if __name__ == '__main__':
+    sys.path.append('..')
+    if sys.argv[1] == 'tweet':
+        json_file = os.path.join('.', 'config_files', 'CONFIG_MODEL_TWEETS.json')
+        file = 'CONFIG_MODEL_TWEETS.json'
+    elif sys.argv[1] == 'wiki':
+        json_file = os.path.join('.', 'config_files', 'CONFIG_MODEL_WIKI.json')
+        file = 'CONFIG_MODEL_WIKI.json'
+    else:
+        print('arg but be tweet or wiki')
+        sys.exit(0)
+
+    res_file = os.path.join('.', 'results', f'model_results_{sys.argv[1]}.csv')
+
+    if not os.path.exists(res_file):    
+        df = pd.DataFrame(columns = [
+            'type_of_rnn',
+            'emb_dim',
+            'lr',
+            'perplexity',
+            'test_loss',
+            'exec_time',
+            'train_size',
+            'val_size',
+            'test_size'
+        ])
+        df.to_csv(res_file)
+
+    i = 0
+    for type_of_rnn in ['GRU', 'LSTM']:
+        for emb_dim in [64,128,256]:
+            for lr in [5e-5, 1e-4, 2e-4, 5e-4, 1e-3]:
+                df = pd.read_csv(res_file, index_col=0)
+                if i >= len(df):
+                    update_json(
+                        json_file = json_file,
+                        MODEL_PARAMETERS = {
+                            'type_of_rnn' : type_of_rnn,
+                            'emb_dim' : emb_dim,
+                            'LEARNING_RATE' : lr,
+                            'fp16' : 1
+                        },
+                        TRAINING_PARAMETERS = {
+                            'fp16' : 1
+                        }
+                    )
+                    
+                    pipeline = Pipeline(file, load_model_data = True)
+                    start_time = time.time()
+                    pipeline.train_model(name = type_of_rnn + '_' + str(emb_dim) + '_' + str(lr))
+                    train_time = int(time.time() - start_time)
+                    perplexity, test_loss = pipeline.perplexity()
+                    df.loc[len(df)] = [
+                        type_of_rnn,
+                        emb_dim,
+                        lr,
+                        perplexity,
+                        test_loss,
+                        train_time,
+                        len(pipeline.train_dataset),
+                        len(pipeline.val_dataset),
+                        len(pipeline.test_dataset)
+                    ]
+                    df.to_csv(res_file)
+                i+=1
+

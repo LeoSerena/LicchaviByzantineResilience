@@ -26,7 +26,7 @@ class Node():
         lambda_ : float,
         p : int
     ):
-        if self.__class__ ==  Node:
+        if self.__class__ == Node:
             raise NotImplementedError("""This is an abstract class""")
         self.id_ = id_
         self.lambda_ = lambda_
@@ -159,9 +159,9 @@ class Federated():
         pipeline_args,
         federated_args,
         load_model_from,
-        testing
+        testing = False
     ):
-        if self.__class__ == Node:
+        if self.__class__ == Federated:
             raise NotImplementedError("""This is an abstract class""")
         self.testing = testing
         # READ CONFIG FILES
@@ -173,6 +173,11 @@ class Federated():
         with open(pipeline_args, 'r') as f:
             self.pipeline_args = json.load(f)
             logging.info('pipeline arguments loaded')
+
+        
+        # setting seeds
+        torch.manual_seed(self.pipeline_args['TORCH_SEED'])
+        np.random.seed(self.pipeline_args['NUMPY_SEED'])
         # LOAD VOCAB
         vocab_path = os.path.join('vocabs', self.pipeline_args['DATA_PARAMETERS']['vocab_file'])
         with open(vocab_path, 'rb') as f:
@@ -180,6 +185,7 @@ class Federated():
             logging.info('vocabulary loaded')
         self.prepare_directories()
         self.load_val_test_set()
+
 
         # INIT GENERAL MODEL
         self.model_parameters = self.pipeline_args['MODEL_PARAMETERS']
@@ -244,7 +250,7 @@ class Federated():
 
         self.val_dataset = SequenceDataset(
             vocabulary = self.vocabulary,
-            text = val_set[:5000] if self.testing else val_set[:10000],
+            text = val_set[:5000] if self.testing else val_set[:50000],
             min_seq_length = data_params['min_seq_length'],
             max_seq_length = data_params['max_seq_length'],
             device = self.pipeline_args['DEVICE'],
@@ -422,6 +428,7 @@ $\lambda_n = {self.nodes[1].lambda_}$  $p_n = {self.nodes[1].p}$ $lr_n = {self.f
         filename_general = today + f"_general_{plt_name}.jpg"
         if save_results:
             plt.savefig(os.path.join(self.plots_folder, filename_general))
+            self.save_results()
         else:
             plt.show()
         plt.close()
@@ -431,7 +438,6 @@ $\lambda_n = {self.nodes[1].lambda_}$  $p_n = {self.nodes[1].p}$ $lr_n = {self.f
         raise NotImplementedError
 
     def train(self, num_max_epochs, save_results = False, plt_name = ''):
-        # for every epoch:
         self.general_model_val_losses = {}
         val_dataloader = torch.utils.data.DataLoader(self.val_dataset, batch_size = 32, drop_last = True, shuffle = False)
         for epoch in range(num_max_epochs+1):
@@ -452,17 +458,99 @@ $\lambda_n = {self.nodes[1].lambda_}$  $p_n = {self.nodes[1].p}$ $lr_n = {self.f
     def general_model_update(self):
         raise NotImplementedError
 
+    def test_loss_perplexity(self):
+        test_dataloader = torch.utils.data.DataLoader(
+            self.test_dataset,
+            batch_size = 1,
+            drop_last = True,
+            shuffle = False
+        )
+        # metrics:
+        results = {}
+        results['val_loss'] = self.general_model_val_losses
+        results['test_loss'] = self.general_model.evaluate(test_dataloader, with_tqdm = False)
+        results['test_perplexity'] = self.general_model.perplexity(test_dataloader)
+        # data info:
+        results['val_len'] = len(self.val_dataset)
+        results['val_tokens'] = self.val_dataset.token_len()
+        results['test_len'] = len(self.test_dataset)
+        results['test_tokens'] = self.test_dataset.token_len()
+        if isinstance(self, Federated_ATT) or isinstance(self, Federated_LICCHAVI):
+            for node_id, node in self.nodes.items():
+                if isinstance(node, UserNode):
+                    self.load_weights(node_id, self.general_model)
+                    test_dataloader = torch.utils.data.DataLoader(
+                        node.test,
+                        batch_size = 1,
+                        drop_last = True,
+                        shuffle = False
+                    )
+                    # metrics:
+                    results[f'test_loss_{node_id}'] = self.general_model.evaluate(test_dataloader, with_tqdm = False)
+                    results[f'test_perplexity_{node_id}'] = self.general_model.perplexity(test_dataloader)
+                    results[f'val_loss_{node_id}'] = node.losses
+                    # data info:
+                    results[f'train_len_{node_id}'] = len(node.data)
+                    results[f'train_tokens_{node_id}'] = len(node.data)
+                    results[f'val_len_{node_id}'] = len(node.val)
+                    results[f'val_tokens_{node_id}'] = len(node.val)
+                    results[f'test_len_{node_id}'] = len(node.test)
+                    results[f'test_tokens_{node_id}'] = len(node.test)
+
+        return results
+
+
+    def get_name(self):
+        if isinstance(self, Federated_SGD):
+            return 'FedSGD'
+        elif isinstance(self, Federated_AVG):
+            return 'FedAVG'
+        elif isinstance(self, Federated_ATT):
+            return 'FedATT'
+        elif isinstance(self, Federated_LICCHAVI):
+            return 'LICCHAVI'
+        else:
+            return 'Fed'
+
+    def save_results(self):
+        results_path = self.federated_args['results_folder']
+        path = os.path.join(results_path, self.pipeline_args['DATA_PARAMETERS']['data_name'])
+        make_dir_if_not_exists(path)
+        path = os.path.join(path, self.get_name())
+        make_dir_if_not_exists(path)
+        # path is of format *resultsFolder*/*dataType*/*FedAlg*/*date*_*id*/
+
+        id_ = len(os.listdir(path))
+        path = os.path.join(path, f"{str(date.today())}_{id_}")
+        make_dir_if_not_exists(path)
+
+        # Hyperparameters saving
+        hyperparameters_path = os.path.join(path, "hyperparams.pickle")
+        hyperparameters = self.pipeline_args
+        hyperparameters['FEDERATED_ARGS'] = self.federated_args
+        with open(hyperparameters_path, 'wb') as f:
+            pickle.dump(hyperparameters, f)
+
+        # history and results saving
+        metrics_path = os.path.join(path, "metrics.pickle")
+        metrics = self.test_loss_perplexity()
+        with open(metrics_path, 'wb') as f:
+            pickle.dump(metrics, f)
+
+
 class Federated_SGD(Federated):
     def __init__(
         self,
         pipeline_args : str,
         federated_args : str,
-        load_model_from = None
+        load_model_from = None,
+        testing = False
     ):
         super(Federated_SGD, self).__init__(
             pipeline_args,
             federated_args,
-            load_model_from
+            load_model_from,
+            testing = testing
         )
     
     def prepare_models_for_training(self):
@@ -544,6 +632,9 @@ class Federated_AVG(Federated):
         self.current_state_dict = self.model.state_dict()
         self.general_model.lambda_ = self.federated_args['lambda_n']
         self.general_model.p = self.federated_args['p_n']
+
+class Federated_ATT(Federated):
+    pass
 
 class Federated_LICCHAVI(Federated):
     def __init__(

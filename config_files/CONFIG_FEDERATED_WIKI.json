@@ -1,6 +1,6 @@
 {
     "DEVICE" : "cuda:0",
-    "max_seq_length" : 20,
+    "max_seq_length" : 30,
     "min_seq_length" : 2,
 
     "weights_dir" : "weights",
