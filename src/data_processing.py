@@ -28,7 +28,7 @@ def default_text_cleaner(string):
 def text_cleaner_raw(string):
     string = re.sub(r'-\n', '', string)
     string = re.sub(r'\n+', ' ', string)
-    string = re.sub(r"""[*#@&%£ö'ä$ü¨~^)('+°¢=/><$\[\]`\-,:!?]""", '', string)
+    string = re.sub(r"""[*#@&%£ö'ä$ü¨~^)('+°¢=/><$\[\]`\-,:!?`]""", '', string)
     string = re.sub(r'[0-9]', '', string)
     string = re.sub('unk', ' ', string)
     string = re.sub('pad', ' ', string)

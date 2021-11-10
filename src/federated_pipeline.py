@@ -113,8 +113,8 @@ class NullByzantineNode(ByzantineNode):
         device
     ):
         super(ByzantineNode, self).__init__(id_,lambda_,p)
-        padd_token = 'day'
-        data = [' '.join([padd_token] * max_seq_length)] * N
+        token = 'day'
+        data = [' '.join([token] * max_seq_length)] * N
         self.data = SequenceDataset(
             vocabulary = vocabulary,
             text = data,
@@ -150,8 +150,21 @@ class RandomByzantineNode(ByzantineNode):
         )
 
 class StrategicalByzantineNode(ByzantineNode):
-    def __init__():
-        pass
+    def __init__(
+            self,
+            id_,
+            lambda_,
+            p,
+            N,
+            vocabulary,
+            min_seq_length,
+            max_seq_length,
+            device 
+        ):
+        super(ByzantineNode, self).__init__(id_, lambda_, p)
+        sentence = 'all work and no play makes jack a dull boy'.split(' ')
+
+
 
 class Federated():
     def __init__(

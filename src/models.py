@@ -6,6 +6,7 @@ import logging
 import pickle
 import sys
 import time
+import re
 
 sys.path.append('.')
 from src.utils import make_dir_if_not_exists, update_json
@@ -436,7 +437,7 @@ class NextWordPredictorModel(torch.nn.Module):
         - 0 if should stop and 1 otherwise.
         """
         if self.early_stopping_metric_best == 'min':
-            is_better = self.best_metric > current_metric
+            is_better = self.best_metric > current_metric 
         else:
             is_better = self.best_metric < current_metric
         if is_better:
@@ -606,7 +607,8 @@ class NextWordPredictorModel(torch.nn.Module):
                 word_index = np.random.choice(logits.shape[0], p = p)
                 tokens.append(word_index)
 
-        return ' '.join([vocabulary.idx_to_word[i] for i in tokens])
+        res = ' '.join([vocabulary.idx_to_word[i] for i in tokens])
+        return re.sub(r' \.', '.', res)
 
 def init_model(vocabulary : Vocabulary, lr : float = None,  **params):
     def map_weights(weights, m_ = 0.01, M_ = 1):
@@ -799,7 +801,7 @@ class Pipeline():
             logging.info('creating train dataset...')
             self.train_dataset = SequenceDataset(
                 vocabulary = self.vocabulary,
-                text = train_set[:500000],
+                text = train_set,
                 min_seq_length = params['min_seq_length'],
                 max_seq_length = params['max_seq_length'],
                 device = params['device'],
@@ -811,7 +813,7 @@ class Pipeline():
                 val_set = pickle.load(f)
             self.val_dataset = SequenceDataset(
                 vocabulary = self.vocabulary,
-                text = val_set[:50000],
+                text = val_set,
                 min_seq_length = params['min_seq_length'],
                 max_seq_length = params['max_seq_length'],
                 device = params['device'],
@@ -823,7 +825,7 @@ class Pipeline():
                 test_set = pickle.load(f)
             self.test_dataset = SequenceDataset(
                 vocabulary = self.vocabulary,
-                text = test_set[:50000],
+                text = test_set,
                 min_seq_length = params['min_seq_length'],
                 max_seq_length = params['max_seq_length'],
                 device = params['device'],
@@ -920,55 +922,100 @@ if __name__ == '__main__':
 
     res_file = os.path.join('.', 'results', f'model_results_{sys.argv[1]}.csv')
 
-    if not os.path.exists(res_file):    
-        df = pd.DataFrame(columns = [
-            'type_of_rnn',
-            'emb_dim',
-            'lr',
-            'perplexity',
-            'test_loss',
-            'exec_time',
-            'train_size',
-            'val_size',
-            'test_size'
-        ])
-        df.to_csv(res_file)
-
-    i = 0
-    for type_of_rnn in ['GRU', 'LSTM']:
-        for emb_dim in [64,128,256]:
-            for lr in [5e-5, 1e-4, 2e-4, 5e-4, 1e-3]:
-                df = pd.read_csv(res_file, index_col=0)
-                if i >= len(df):
-                    update_json(
-                        json_file = json_file,
-                        MODEL_PARAMETERS = {
-                            'type_of_rnn' : type_of_rnn,
-                            'emb_dim' : emb_dim,
-                            'LEARNING_RATE' : lr,
-                            'fp16' : 1
-                        },
-                        TRAINING_PARAMETERS = {
-                            'fp16' : 1
-                        }
-                    )
-                    
-                    pipeline = Pipeline(file, load_model_data = True)
-                    start_time = time.time()
-                    pipeline.train_model(name = type_of_rnn + '_' + str(emb_dim) + '_' + str(lr))
-                    train_time = int(time.time() - start_time)
-                    perplexity, test_loss = pipeline.perplexity()
-                    df.loc[len(df)] = [
-                        type_of_rnn,
-                        emb_dim,
-                        lr,
-                        perplexity,
-                        test_loss,
-                        train_time,
-                        len(pipeline.train_dataset),
-                        len(pipeline.val_dataset),
-                        len(pipeline.test_dataset)
-                    ]
-                    df.to_csv(res_file)
-                i+=1
+    if sys.argv[2] == 'batch':
+        if not os.path.exists(res_file):    
+            df = pd.DataFrame(columns = [
+                'type_of_rnn',
+                'emb_dim',
+                'lr',
+                'perplexity',
+                'test_loss',
+                'exec_time',
+                'train_size',
+                'val_size',
+                'test_size',
+                'batch_size'
+            ])
+            df.to_csv(res_file)
+        i = 0
+        for bs in [4,8,16]:
+            df = pd.read_csv(res_file, index_col=0)
+            if i>= len(df):
+                update_json(
+                    json_file = json_file,
+                    TRAINING_PARAMETERS = {
+                        'batch_size' : bs
+                    }
+                )
+                pipeline = Pipeline(file, load_model_data = True)
+                start_time = time.time()
+                pipeline.train_model(name = 'GRU' + '_' + str(256) + '_' + str(1e-3) + '_' + str(bs))
+                train_time = int(time.time() - start_time)
+                perplexity, test_loss = pipeline.perplexity()
+                df.loc[len(df)] = [
+                    'GRU',
+                    256,
+                    1e-3,
+                    perplexity,
+                    test_loss,
+                    train_time,
+                    len(pipeline.train_dataset),
+                    len(pipeline.val_dataset),
+                    len(pipeline.test_dataset),
+                    bs
+                ]
+                df.to_csv(res_file)
+            i+=1
+    
+    elif sys.argv[2] == 'emb_lr':
+        if not os.path.exists(res_file):    
+            df = pd.DataFrame(columns = [
+                'type_of_rnn',
+                'emb_dim',
+                'lr',
+                'perplexity',
+                'test_loss',
+                'exec_time',
+                'train_size',
+                'val_size',
+                'test_size'
+            ])
+            df.to_csv(res_file)
+        i = 0
+        for type_of_rnn in ['GRU', 'LSTM']:
+            for emb_dim in [64,128,256]:
+                for lr in [5e-5, 1e-4, 2e-4, 5e-4, 1e-3]:
+                    df = pd.read_csv(res_file, index_col=0)
+                    if i >= len(df):
+                        update_json(
+                            json_file = json_file,
+                            MODEL_PARAMETERS = {
+                                'type_of_rnn' : type_of_rnn,
+                                'emb_dim' : emb_dim,
+                                'LEARNING_RATE' : lr,
+                                'fp16' : 1
+                            },
+                            TRAINING_PARAMETERS = {
+                                'fp16' : 1
+                            }
+                        )
+                        
+                        pipeline = Pipeline(file, load_model_data = True)
+                        start_time = time.time()
+                        pipeline.train_model(name = type_of_rnn + '_' + str(emb_dim) + '_' + str(lr))
+                        train_time = int(time.time() - start_time)
+                        perplexity, test_loss = pipeline.perplexity()
+                        df.loc[len(df)] = [
+                            type_of_rnn,
+                            emb_dim,
+                            lr,
+                            perplexity,
+                            test_loss,
+                            train_time,
+                            len(pipeline.train_dataset),
+                            len(pipeline.val_dataset),
+                            len(pipeline.test_dataset)
+                        ]
+                        df.to_csv(res_file)
+                    i+=1
 
