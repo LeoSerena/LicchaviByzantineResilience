@@ -262,7 +262,7 @@ class NextWordPredictorModel(torch.nn.Module):
                 self.num_rnn_hidden_layers, batch_size, self.hidden_state_size
             ).to(self.device).detach()
 
-    def perplexity(self, dataloader, with_tqdm = True):
+    def perplexity(self, dataloader, with_recall = False, with_tqdm = False):
         """
         Computes the perplexity of the model on the given dataset
 
@@ -277,6 +277,8 @@ class NextWordPredictorModel(torch.nn.Module):
         with torch.no_grad():
             total_tokens = 0
             probabilities = []
+            if with_recall:
+                total, top1hit, top3hit = 0,0,0
             for batch in tqdm(dataloader) if with_tqdm else dataloader:
                 hidden = self.init_hidden(dataloader.batch_size)
                 outputs, _ = self.forward(batch[:,:-1], hidden)
@@ -289,6 +291,16 @@ class NextWordPredictorModel(torch.nn.Module):
 
                     logits = m(seq)
 
+                    
+                    if with_recall:
+                        for top3, label in zip(torch.topk(logits.T,3)[1].cpu().numpy(), lab.cpu().numpy()):
+                            if label not in [0,1]:
+                                if label in top3:
+                                    top3hit += 1
+                                if label == top3[0]:
+                                    top1hit += 1
+                                total += 1
+
                     logits = logits[lab,range(len(lab))]
                     logits = logits[lab != 0].cpu().numpy()
 
@@ -298,7 +310,14 @@ class NextWordPredictorModel(torch.nn.Module):
                 total_losses.append(self.criterion(outputs, labels).item())
 
         perplexity = np.exp(- np.sum(probabilities) / total_tokens)
-        return perplexity, np.mean(total_losses)
+        test_loss = np.mean(total_losses)
+        if with_recall:
+            f1_recall = top1hit / total
+            f3_recall = top3hit / total
+        if with_recall:
+            return perplexity, test_loss, f1_recall, f3_recall
+        else:
+            return perplexity, test_loss
     
     def evaluate(self, dataloader, sep_losses = False, eval_mode = True, node = None, with_tqdm = True):
         """
@@ -820,18 +839,18 @@ class Pipeline():
                 with_tqdm = True
             )
             logging.info('validation dataset created')
-            logging.info('creating test dataset...')
-            with open(test_set_file, 'rb') as f:
-                test_set = pickle.load(f)
-            self.test_dataset = SequenceDataset(
-                vocabulary = self.vocabulary,
-                text = test_set,
-                min_seq_length = params['min_seq_length'],
-                max_seq_length = params['max_seq_length'],
-                device = params['device'],
-                with_tqdm = True
-            )
-            logging.info('test dataset created')
+        logging.info('creating test dataset...')
+        with open(test_set_file, 'rb') as f:
+            test_set = pickle.load(f)
+        self.test_dataset = SequenceDataset(
+            vocabulary = self.vocabulary,
+            text = test_set,
+            min_seq_length = params['min_seq_length'],
+            max_seq_length = params['max_seq_length'],
+            device = params['device'],
+            with_tqdm = True
+        )
+        logging.info('test dataset created')
         gc.collect()
 
     def train_model(self, name = 'test'):
@@ -886,7 +905,7 @@ class Pipeline():
         )
         return self.model.evaluate(test_dataloader)
 
-    def perplexity(self, dataset = None):
+    def perplexity(self, dataset = None, **kwargs):
         if dataset is None:
             dataset = self.test_dataset
         dataloader = torch.utils.data.DataLoader(
@@ -896,7 +915,7 @@ class Pipeline():
             pin_memory = False,
             drop_last = True
         )
-        return self.model.perplexity(dataloader)
+        return self.model.perplexity(dataloader, **kwargs)
 
     def generate(self, start_text : str, vocabulary : Vocabulary = None, num_words = 100):
         return self.model.generate(

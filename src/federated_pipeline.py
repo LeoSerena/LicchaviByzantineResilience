@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 sys.path.append('.')
 from src.data_processing import  SequenceDataset
 from src.models import NextWordPredictorModel, init_model
-from src.utils import make_dir_if_not_exists, split_data
+from src.utils import make_dir_if_not_exists, split_data, update_json
 
 import torch
 
@@ -163,7 +163,7 @@ class StrategicalByzantineNode(ByzantineNode):
         ):
         super(ByzantineNode, self).__init__(id_, lambda_, p)
         sentence = 'all work and no play makes jack a dull boy'.split(' ')
-
+        
 
 
 class Federated():
@@ -239,10 +239,6 @@ class Federated():
 
         self.results_folder = self.federated_args['results_folder']
         make_dir_if_not_exists(self.results_folder)
-        self.metrics_folder = os.path.join(self.results_folder, self.federated_args['metrics_results_folder'])
-        make_dir_if_not_exists(self.metrics_folder)
-        self.plots_folder = os.path.join(self.results_folder, self.federated_args['plots_results_folder'])
-        make_dir_if_not_exists(self.plots_folder)
     
     def load_val_test_set(self):
         data_params = self.pipeline_args['DATA_PARAMETERS']
@@ -429,7 +425,8 @@ $\lambda_n = {self.nodes[1].lambda_}$  $p_n = {self.nodes[1].p}$ $lr_n = {self.f
         filename_nodes = today + f"_nodes_{plt_name}.jpg"
 
         if save_results:
-            plt.savefig(os.path.join(self.plots_folder, filename_nodes))
+            plot_folder = self.save_results()
+            plt.savefig(os.path.join(plot_folder, filename_nodes))
         else:
             plt.show()
         plt.close()
@@ -440,8 +437,8 @@ $\lambda_n = {self.nodes[1].lambda_}$  $p_n = {self.nodes[1].p}$ $lr_n = {self.f
 
         filename_general = today + f"_general_{plt_name}.jpg"
         if save_results:
-            plt.savefig(os.path.join(self.plots_folder, filename_general))
-            self.save_results()
+            plt.savefig(os.path.join(plot_folder, filename_general))
+            
         else:
             plt.show()
         plt.close()
@@ -471,7 +468,7 @@ $\lambda_n = {self.nodes[1].lambda_}$  $p_n = {self.nodes[1].p}$ $lr_n = {self.f
     def general_model_update(self):
         raise NotImplementedError
 
-    def test_loss_perplexity(self):
+    def test_loss_perplexity_recall(self):
         test_dataloader = torch.utils.data.DataLoader(
             self.test_dataset,
             batch_size = 1,
@@ -481,8 +478,11 @@ $\lambda_n = {self.nodes[1].lambda_}$  $p_n = {self.nodes[1].p}$ $lr_n = {self.f
         # metrics:
         results = {}
         results['val_loss'] = self.general_model_val_losses
-        results['test_loss'] = self.general_model.evaluate(test_dataloader, with_tqdm = False)
-        results['test_perplexity'] = self.general_model.perplexity(test_dataloader)
+        results['test_perplexity'], results['test_loss'], results['f1_recall'], results['f3_recall'] = self.general_model.perplexity(
+            test_dataloader,
+            with_tqdm = True,
+            with_recall = True
+        )
         # data info:
         results['val_len'] = len(self.val_dataset)
         results['val_tokens'] = self.val_dataset.token_len()
@@ -499,8 +499,14 @@ $\lambda_n = {self.nodes[1].lambda_}$  $p_n = {self.nodes[1].p}$ $lr_n = {self.f
                         shuffle = False
                     )
                     # metrics:
-                    results[f'test_loss_{node_id}'] = self.general_model.evaluate(test_dataloader, with_tqdm = False)
-                    results[f'test_perplexity_{node_id}'] = self.general_model.perplexity(test_dataloader)
+                    (
+                        results[f'test_perplexity_{node_id}'],  results[f'test_loss_{node_id}'], 
+                        results[f'f1_recall_{node_id}'], results[f'f3_recall_{node_id}']
+                    ) = self.general_model.perplexity(
+                        test_dataloader,
+                        with_tqdm = False,
+                        with_recall=True
+                    )
                     results[f'val_loss_{node_id}'] = node.losses
                     # data info:
                     results[f'train_len_{node_id}'] = len(node.data)
@@ -546,9 +552,11 @@ $\lambda_n = {self.nodes[1].lambda_}$  $p_n = {self.nodes[1].p}$ $lr_n = {self.f
 
         # history and results saving
         metrics_path = os.path.join(path, "metrics.pickle")
-        metrics = self.test_loss_perplexity()
+        metrics = self.test_loss_perplexity_recall()
         with open(metrics_path, 'wb') as f:
             pickle.dump(metrics, f)
+
+        return path
 
 
 class Federated_SGD(Federated):
@@ -585,6 +593,11 @@ class Federated_SGD(Federated):
                     self.agg_state_dict[key] = self.agg_state_dict[key] + self.node_state_dict[key] * N / total_data
 
     def nodes_epoch_step(self, epoch):
+        """[summary]
+
+        :param epoch: [description]
+        :type epoch: [type]
+        """
         total_data = 0
         self.agg_state_dict = None
         for node_id in tqdm(range(1, self.federated_args['num_training_nodes'] + 1)):
@@ -607,6 +620,7 @@ class Federated_SGD(Federated):
                     dataloader = node_dataloader, 
                     node = node, 
                     eval_mode = False,
+                    with_tqdm = False,
                     sep_losses = True
                 )
             else:
@@ -763,5 +777,65 @@ class Federated_LICCHAVI(Federated):
         # performs the general model optimization step
         self.general_model.optimizer.step()
 
+
+def grid_search(federated_alg, dataType):
+    if dataType == 'tweet':
+        model_file = "CONFIG_MODEL_TWEETS.json"
+        fed_file = "CONFIG_FEDERATED_TWEETS.json"
+    else:
+        model_file = "CONFIG_MODEL_WIKI.json"
+        fed_file = "CONFIG_FEDERATED_WIKI.json"
+
+    for lr in [5e-6, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3]:
+        for lambda_0 in [5e-6, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3]:
+            update_json(
+                os.path.join('.','config_files', fed_file),
+                general_model_lr = lr,
+                node_model_lr = lr,
+                lambda_0 = lambda_0
+            )
+            federated = federated_alg(model_file, fed_file)
+            federated.train(
+                10,
+                save_results = True, 
+                plt_name = f'type:{dataType}|alg:{federated.get_name()} || lr:{lr}|lamda_0:{lambda_0}'
+            )
+
+
 if __name__ == '__main__':
-    pass
+    """[summary]
+    """
+    arguments = sys.argv
+
+    if len(arguments) != 4:
+        print('invalid arguments')
+        sys.exit(1)
+    elif arguments[1] in ['FedSGD', 'FedAVG', 'FedATT', 'LICCHAVI']:
+        if arguments[1] == 'FedSGD':
+            federated = Federated_SGD
+        elif arguments[1] == 'FedAVG':
+            federated = Federated_AVG
+        elif arguments[1] == 'FedATT':
+            federated = Federated_ATT
+        else:
+            federated = Federated_LICCHAVI
+
+        if arguments[3] not in ['tweet', 'wiki']:
+            print('invalid arguments')
+            sys.exit(1)
+
+        if arguments[2] == 'grid':
+            grid_search(
+                federated,
+                arguments[3]
+            )
+        elif arguments[2] == 'attack':
+            pass
+        else:
+            print('invalid arguments')
+            sys.exit(1)
+
+
+    else:
+        print('invalid arguments')
+        sys.exit(1)
