@@ -18,9 +18,10 @@
     "nodes_data_folder": "nodes_data_wiki103",
     "lambdas": "uniform",
     "general_model_lr": 0.001,
-    "node_model_lr": 0.001,
+    "node_model_lr": 1e-05,
     "lambda_0": 0.001,
     "lambda_n": 0.01,
     "p_0": 2,
-    "p_n": 1
+    "p_n": 1,
+    "C": 1
 }

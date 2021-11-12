@@ -444,10 +444,6 @@ $\lambda_n = {self.nodes[1].lambda_}$  $p_n = {self.nodes[1].p}$ $lr_n = {self.f
             plt.show()
         plt.close()
 
-    @abstractclassmethod
-    def prepare_models_for_training(self):
-        raise NotImplementedError
-
     def train(self, num_max_epochs, save_results = False, plt_name = ''):
         self.general_model_val_losses = {}
         val_dataloader = torch.utils.data.DataLoader(self.val_dataset, batch_size = 32, drop_last = True, shuffle = False)
@@ -460,14 +456,6 @@ $\lambda_n = {self.nodes[1].lambda_}$  $p_n = {self.nodes[1].p}$ $lr_n = {self.f
             general_model_val_loss = self.general_model.evaluate(val_dataloader)
             self.general_model_val_losses[epoch] = general_model_val_loss
         self.plot_training_history(save_results, plt_name)
-
-    @abstractclassmethod
-    def nodes_epoch_step(self, epoch):
-        raise NotImplementedError
-
-    @abstractclassmethod
-    def general_model_update(self):
-        raise NotImplementedError
 
     def test_loss_perplexity_recall(self):
         test_dataloader = torch.utils.data.DataLoader(
@@ -559,6 +547,17 @@ $\lambda_n = {self.nodes[1].lambda_}$  $p_n = {self.nodes[1].p}$ $lr_n = {self.f
 
         return path
 
+    @abstractclassmethod
+    def prepare_models_for_training(self):
+        raise NotImplementedError
+
+    @abstractclassmethod
+    def nodes_epoch_step(self, epoch):
+        raise NotImplementedError
+
+    @abstractclassmethod
+    def general_model_update(self):
+        raise NotImplementedError
 
 class Federated_SGD(Federated):
     def __init__(
@@ -596,11 +595,6 @@ class Federated_SGD(Federated):
                     self.agg_state_dict[key] = self.agg_state_dict[key] + self.node_state_dict[key] * N / total_data
 
     def nodes_epoch_step(self, epoch):
-        """[summary]
-
-        :param epoch: [description]
-        :type epoch: [type]
-        """
         total_data = 0
         self.agg_state_dict = None
         for node_id in tqdm(range(1, self.federated_args['num_training_nodes'] + 1)):
@@ -612,7 +606,7 @@ class Federated_SGD(Federated):
 
             node_dataloader = torch.utils.data.DataLoader(
                 node.data,
-                batch_size = 32,
+                batch_size = self.pipeline_args['TRAINING_PARAMETERS']['batch_size'],
                 shuffle = True,
                 drop_last = True
             )
@@ -660,9 +654,79 @@ class Federated_AVG(Federated):
         self.general_model.train()
         self.general_model.freeze_embeddings()  
         # Current general model is stored in state dict
-        self.current_state_dict = self.model.state_dict()
-        self.general_model.lambda_ = self.federated_args['lambda_n']
-        self.general_model.p = self.federated_args['p_n']
+        self.current_state_dict = self.general_model.state_dict()
+        # save an optimizer to reinitialize for every node
+        self.optim_stat_dict = self.general_model.optimizer.state_dict()
+
+    def weigthed_avg(self, N, total_data):
+        # perform node weighted average
+        node_state_dict = self.general_model.state_dict()
+        if self.agg_state_dict is None:
+            self.agg_state_dict = node_state_dict
+            for key in self.agg_state_dict:
+                self.agg_state_dict[key] = self.agg_state_dict[key] * N / total_data
+        else:
+            for key in self.agg_state_dict:
+                if self.agg_state_dict[key].requires_grad:
+                    self.agg_state_dict[key] = self.agg_state_dict[key] + self.node_state_dict[key] * N / total_data
+
+    def nodes_epoch_step(self, epoch):
+        total_data = 0
+        self.agg_state_dict = None
+        # We only select a subset of C * N nodes
+        ids = np.arange(1, self.federated_args['num_training_nodes'] + 1)
+        np.random.shuffle(ids)
+        index = int(self.federated_args['C'] * len(ids))
+        ids = ids[:index]
+        rest = ids[index:]
+        if len(rest) > 0:
+            for node_id in rest:
+                node = self.nodes[node_id]
+                node.losses['total_loss'].append(0)
+                node.losses['loss'].append(0)
+                node.losses['reg_loss'].append(0)
+
+        for node_id in tqdm(ids):
+            # At the first epoch all nodes start from the init model
+            node = self.nodes[node_id]
+
+            N = len(node.data)
+            total_data += N
+
+            node_dataloader = torch.utils.data.DataLoader(
+                node.data,
+                batch_size = self.pipeline_args['TRAINING_PARAMETERS']['batch_size'],
+                shuffle = True,
+                drop_last = True
+            )
+            # loads general model
+            self.general_model.load_state_dict(self.current_state_dict)
+            self.general_model.optimizer.load_state_dict(self.optim_stat_dict)
+            if epoch == 0:
+                user_total_losses, user_losses, user_reg_losses = self.general_model.evaluate(
+                    dataloader = node_dataloader, 
+                    node = node, 
+                    eval_mode = False,
+                    with_tqdm = False,
+                    sep_losses = True
+                )
+            else:
+                # Perform several data passes through data in FedAVG
+                for e in range(self.pipeline_args['TRAINING_PARAMETERS']['num_epochs']):
+                    user_total_losses, user_losses, user_reg_losses = self.general_model.epoch_step(
+                        node_dataloader,
+                        node,
+                        with_tqdm = False,
+                        sep_losses=True
+                    )
+            node.losses['total_loss'].append(np.mean(user_total_losses))
+            node.losses['loss'].append(np.mean(user_losses))
+            node.losses['reg_loss'].append(np.mean(user_reg_losses))
+
+            self.weigthed_avg(N, total_data)
+
+    def general_model_update(self):
+        self.current_state_dict = self.agg_state_dict
 
 class Federated_ATT(Federated):
     pass
@@ -792,35 +856,59 @@ def grid_search(federated_alg, dataType):
         fed_file = "CONFIG_FEDERATED_WIKI.json"
 
     if federated_alg == 'FedSGD':
-        # For FedSGD, we only need to grid search learning rates
-        federated = Federated_SGD
+        # For FedSGD, we only need to grid search learning rates and nodes batch_size
         for lr in [5e-6, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3]:
-            update_json(
-                os.path.join('.','config_files', fed_file), node_model_lr = lr )
-            federated = federated_alg(model_file, fed_file)
-            federated.train(10, save_results = True, plt_name = f'type:{dataType}|alg:{federated.get_name()} || lr:{lr}|')
-    elif arguments[1] == 'FedAVG':
-        federated = Federated_AVG
+            for batch_size in [4, 8, 16, 32]:
+                for gamma in [1e-5, 1e-6, 0]:
+                    update_json(os.path.join('.','config_files', fed_file), node_model_lr = lr)
+                    update_json(os.path.join('.','config_files', model_file), 
+                    TRAINING_PARAMETERS = {
+                        'batch_size' : batch_size
+                    },
+                    MODEL_PARAMETERS = {
+                        'gamma' : gamma
+                    })
+                    federated = Federated_SGD(model_file, fed_file)
+                    federated.train(10, save_results = True, plt_name = f'type:{dataType}|alg:{federated.get_name()} || lr:{lr}|bs:{batch_size}|gam:{gamma}')
+    elif federated_alg == 'FedAVG':
+        # For FedAVG, we need to grid search learning rates, nodes batch_size, nodes epochs and nodes proportion
+        # These are the same hyperparameters tuned in the keyboard federated paper
+        for lr in [1e-5, 5e-5, 1e-4, 5e-4, 1e-3]:
+            for batch_size in [8, 16, 32]:
+                for num_epochs in [1, 2, 3]:
+                    for C in [0.1, 0.5, 0.7, 1]:
+                        for gamma in [1e-5, 1e-6, 0]:
+                            update_json(os.path.join('.','config_files', fed_file), 
+                            node_model_lr = lr,
+                            C = C)
+                            update_json(os.path.join('.','config_files', model_file), 
+                            TRAINING_PARAMETERS = {
+                                'batch_size' : batch_size,
+                                'num_epochs' : num_epochs
+                            },
+                            MODEL_PARAMETERS = {
+                                'gamma' : gamma
+                            })
+                            federated = Federated_AVG(model_file, fed_file)
+                            federated.train(10, save_results = True, plt_name = f'type:{dataType}|alg:{federated.get_name()} || lr:{lr}| bs:{batch_size} | ep:{num_epochs} | C:{C}')
     elif arguments[1] == 'FedATT':
         federated = Federated_ATT
     else:
         federated = Federated_LICCHAVI
-
-
-    for lr in [5e-6, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3]:
-        for lambda_0 in [5e-6, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3]:
-            update_json(
-                os.path.join('.','config_files', fed_file),
-                general_model_lr = lr,
-                node_model_lr = lr,
-                lambda_0 = lambda_0
-            )
-            federated = federated_alg(model_file, fed_file)
-            federated.train(
-                10,
-                save_results = True, 
-                plt_name = f'type:{dataType}|alg:{federated.get_name()} || lr:{lr}|lamda_0:{lambda_0}'
-            )
+        for lr in [5e-6, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3]:
+            for lambda_0 in [5e-6, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3]:
+                update_json(
+                    os.path.join('.','config_files', fed_file),
+                    general_model_lr = lr,
+                    node_model_lr = lr,
+                    lambda_0 = lambda_0
+                )
+                federated = federated_alg(model_file, fed_file)
+                federated.train(
+                    10,
+                    save_results = True, 
+                    plt_name = f'type:{dataType}|alg:{federated.get_name()} || lr:{lr}|lamda_0:{lambda_0}'
+                )
 
 
 if __name__ == '__main__':
