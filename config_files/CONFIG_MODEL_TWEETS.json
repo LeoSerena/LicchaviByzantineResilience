@@ -6,7 +6,7 @@
         "data_name": "tweets",
         "data_folder": "data",
         "data_file": "tweets",
-        "vocab_file": "vocab.pickle",
+        "vocab_file": "vocab_tweet.pickle",
         "vocab_from_scratch": 0,
         "max_voc_size": 10000,
         "min_word_occ": 10,

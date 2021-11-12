@@ -364,7 +364,8 @@ class Federated():
     def load_weights(self, node_id : int = 0, model : NextWordPredictorModel = None):
         """
         Given a node id and a NextWordPredictoModel, loads the rnn and linear weights from the 
-        corresponding node in the model. If the id is 0, will load to the general model
+        corresponding node in the model. If the id is 0, will load to the general model. It also
+        loads the optimizer specific to the id.
 
         Parameters
         ----------
@@ -579,6 +580,8 @@ class Federated_SGD(Federated):
         self.general_model.freeze_embeddings()  
         # Current general model is stored in state dict
         self.current_state_dict = self.general_model.state_dict()
+        # save an optimizer to reinitialize for every node
+        self.optim_stat_dict = self.general_model.optimizer.state_dict()
 
     def weigthed_avg(self, N, total_data):
         # perform node weighted average
@@ -615,6 +618,7 @@ class Federated_SGD(Federated):
             )
             # loads general model
             self.general_model.load_state_dict(self.current_state_dict)
+            self.general_model.optimizer.load_state_dict(self.optim_stat_dict)
             if epoch == 0:
                 user_total_losses, user_losses, user_reg_losses = self.general_model.evaluate(
                     dataloader = node_dataloader, 
@@ -779,12 +783,29 @@ class Federated_LICCHAVI(Federated):
 
 
 def grid_search(federated_alg, dataType):
+
     if dataType == 'tweet':
         model_file = "CONFIG_MODEL_TWEETS.json"
         fed_file = "CONFIG_FEDERATED_TWEETS.json"
     else:
         model_file = "CONFIG_MODEL_WIKI.json"
         fed_file = "CONFIG_FEDERATED_WIKI.json"
+
+    if federated_alg == 'FedSGD':
+        # For FedSGD, we only need to grid search learning rates
+        federated = Federated_SGD
+        for lr in [5e-6, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3]:
+            update_json(
+                os.path.join('.','config_files', fed_file), node_model_lr = lr )
+            federated = federated_alg(model_file, fed_file)
+            federated.train(10, save_results = True, plt_name = f'type:{dataType}|alg:{federated.get_name()} || lr:{lr}|')
+    elif arguments[1] == 'FedAVG':
+        federated = Federated_AVG
+    elif arguments[1] == 'FedATT':
+        federated = Federated_ATT
+    else:
+        federated = Federated_LICCHAVI
+
 
     for lr in [5e-6, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3]:
         for lambda_0 in [5e-6, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3]:
@@ -811,22 +832,13 @@ if __name__ == '__main__':
         print('invalid arguments')
         sys.exit(1)
     elif arguments[1] in ['FedSGD', 'FedAVG', 'FedATT', 'LICCHAVI']:
-        if arguments[1] == 'FedSGD':
-            federated = Federated_SGD
-        elif arguments[1] == 'FedAVG':
-            federated = Federated_AVG
-        elif arguments[1] == 'FedATT':
-            federated = Federated_ATT
-        else:
-            federated = Federated_LICCHAVI
-
         if arguments[3] not in ['tweet', 'wiki']:
             print('invalid arguments')
             sys.exit(1)
 
         if arguments[2] == 'grid':
             grid_search(
-                federated,
+                arguments[1],
                 arguments[3]
             )
         elif arguments[2] == 'attack':
