@@ -85,6 +85,3 @@ https://arxiv.org/pdf/1811.03604.pdf
 
 - FedAtt
 https://arxiv.org/abs/1812.07108
-
-- FedMed
-https://www.mdpi.com/1424-8220/20/14/4048

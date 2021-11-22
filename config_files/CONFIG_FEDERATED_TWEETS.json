@@ -12,15 +12,17 @@
     "num_nodes": 1000,
     "num_training_nodes": 50,
     "num_byzantine": 0,
+    "sentence": "all work and no play makes trump a dull boy ",
     "byzantine_datasize": 1000,
     "byzantine_type": "null",
     "data_sparsity": "normal",
     "nodes_data_folder": "nodes_data_tweets",
     "lambdas": "uniform",
-    "general_model_lr": 5e-06,
-    "node_model_lr": 5e-06,
-    "lambda_0": 5e-06,
-    "lambda_n": 0.0001,
+    "general_model_lr": 0.0001,
+    "node_model_lr": 0.0001,
+    "lambda_0": 0,
+    "lambda_n": 1,
     "p_0": 2,
-    "p_n": 1
+    "p_n": 1,
+    "C": 1
 }

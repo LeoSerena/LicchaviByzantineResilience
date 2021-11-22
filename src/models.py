@@ -356,11 +356,13 @@ class NextWordPredictorModel(torch.nn.Module):
                     reg_loss = self.regularizer() / len(batch)
                     if hasattr(self, 'general_regularizer'):
                         loss = reg_loss + loss
-                        reg_loss = self.general_regularizer(self, node)
+                        reg_loss = self.general_regularizer(node)
                 
-                reg_loss = self.regularizer()
-                total_loss = loss + reg_loss
-
+                if eval_mode:
+                    reg_loss = self.regularizer()
+                    total_loss = loss + reg_loss
+                else:
+                    total_loss = loss
                 
 
                 total_losses.append(total_loss.item())
@@ -387,14 +389,17 @@ class NextWordPredictorModel(torch.nn.Module):
             The list of training losses for all batches
         """
         self.train()
+
         if sep_losses:
             sample_losses = []
             regularizer_losses = []
         total_losses = []
+
         if with_tqdm:
             iterator = tqdm(data_loader)
         else:
             iterator = data_loader
+
         for batch in iterator:
             for param in self.parameters():
                 param.grad = None
@@ -409,7 +414,7 @@ class NextWordPredictorModel(torch.nn.Module):
             # Otherwise it is the self model regularization loss
             if hasattr(self, 'general_regularizer'):
                 loss = reg_loss + loss
-                reg_loss = self.general_regularizer(self, node)
+                reg_loss = self.general_regularizer(node)
             
             total_loss = loss + reg_loss
             
@@ -427,7 +432,7 @@ class NextWordPredictorModel(torch.nn.Module):
                 sample_losses.append(loss.item())
                 regularizer_losses.append(reg_loss.item())
         
-        self.scheduler.step()
+        # self.scheduler.step()
         
         if sep_losses:
             return total_losses, sample_losses, regularizer_losses
@@ -844,7 +849,7 @@ class Pipeline():
             test_set = pickle.load(f)
         self.test_dataset = SequenceDataset(
             vocabulary = self.vocabulary,
-            text = test_set,
+            text = test_set[:5000],
             min_seq_length = params['min_seq_length'],
             max_seq_length = params['max_seq_length'],
             device = params['device'],

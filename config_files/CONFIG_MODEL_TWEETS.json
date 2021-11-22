@@ -23,15 +23,15 @@
         "dropout": 0.5,
         "weight": 0,
         "positional_encoding": 0,
-        "LEARNING_RATE": 0.001,
+        "LEARNING_RATE": 1e-05,
         "fp16": 0,
         "opt": "ADAM",
         "tied_embeddings": 0,
         "q": 2,
-        "gamma": 0.0002
+        "gamma": 0
     },
     "TRAINING_PARAMETERS": {
-        "batch_size": 8,
+        "batch_size": 32,
         "num_epochs": 1,
         "fp16": 0,
         "regularizer": "uniform",
