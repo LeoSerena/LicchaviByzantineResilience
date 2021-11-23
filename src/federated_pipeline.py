@@ -101,6 +101,12 @@ class ByzantineNode(Node):
         if self.__class__ ==  ByzantineNode:
             raise NotImplementedError("""This is an abstract class""")
 
+    def compute_forged_model(self, model):
+        pass
+
+    def generate_poisoned_dataset(self):
+        pass
+
 class RandomByzantineNode(ByzantineNode):
     def __init__(
             self,
@@ -655,9 +661,13 @@ class Federated_AVG(Federated):
                 if isinstance(node, ModelForgingNode):
                     self.general_model.load_state_dict(self.attack_model_path)
                 elif isinstance(node, StrategicModelForgingNode):
-                    self.general_model.load_state_dict(node.compute_forged_model(self.general_model))
+                    self.general_model.load_state_dict(node.compute_forged_model(
+                        self.general_model,
+                        self.model_parameters
+                    ))
                 else:
                     if isinstance(node, StrategicDataPoisoningNode):
+                        node.compute_forged_model(self.general_model)
                         node.generate_poisoned_dataset(self.general_model)
 
                     node_dataloader = torch.utils.data.DataLoader(
@@ -791,18 +801,26 @@ class Federated_LICCHAVI(Federated):
                     with_tqdm = False
                 )
             else:
-                # Perform several data passes through data 
-                self.load_weights(node_id, self.user_model)
-                for e in range(self.pipeline_args['TRAINING_PARAMETERS']['num_epochs']):
-                    user_total_losses, user_losses, user_reg_losses = self.user_model.epoch_step(
-                        node_dataloader,
-                        node,
-                        with_tqdm = False,
-                        sep_losses = True
-                    )
-            node.losses['total_loss'].append(np.mean(user_total_losses))
-            node.losses['loss'].append(np.mean(user_losses))
-            node.losses['reg_loss'].append(np.mean(user_reg_losses))
+                if isinstance(node, ModelForgingNode):
+                    self.user_model.load_state_dict(self.attack_model_path)
+                elif isinstance(node, StrategicModelForgingNode):
+                    self.user_model.load_state_dict(node.compute_forged_model(self.general_model))
+                else:
+                    if isinstance(node, StrategicDataPoisoningNode):
+                        node.compute_forged_model(self.general_model)
+                        node.generate_poisoned_dataset(self.general_model)
+                    # Perform several data passes through data 
+                    self.load_weights(node_id, self.user_model)
+                    for e in range(self.pipeline_args['TRAINING_PARAMETERS']['num_epochs']):
+                        user_total_losses, user_losses, user_reg_losses = self.user_model.epoch_step(
+                            node_dataloader,
+                            node,
+                            with_tqdm = False,
+                            sep_losses = True
+                        )
+                    node.losses['total_loss'].append(np.mean(user_total_losses))
+                    node.losses['loss'].append(np.mean(user_losses))
+                    node.losses['reg_loss'].append(np.mean(user_reg_losses))
             
             self.save_weights(node_id) 
     
@@ -839,11 +857,11 @@ def grid_search(federated_alg, dataType):
     if federated_alg == 'FedAVG':
         # For FedAVG, we need to grid search learning rates, nodes batch_size, nodes epochs and nodes proportion
         # These are the same hyperparameters tuned in the keyboard federated paper
-        for lr in [5e-3, 1e-3, 1e-4]:
-            for bs in [8, 16, 32]:
-                for num_epochs in [1]:
+        for lr in [1e-4]:
+            for bs in [32]:
+                for num_epochs in [1,2,3]:
                     for C in [1]:
-                        for gamma in [0]:
+                        for gamma in [1e-4,1e-5,1e-6]:
                             update_json(os.path.join('.','config_files', fed_file), 
                             node_model_lr = lr,
                             C = C)
@@ -862,26 +880,28 @@ def grid_search(federated_alg, dataType):
                             i+=1
     elif federated_alg =='LICCHAVI':
         federated = Federated_LICCHAVI
-        for lr in [5e-3, 1e-3, 1e-4]:
-            for lambda_0 in [0]:
-                for lambda_n in [1]:
-                    for bs in [8, 16, 32]:
-                        update_json(
-                            os.path.join('.','config_files', fed_file),
-                            general_model_lr = lr,
-                            node_model_lr = lr,
-                            lambda_0 = lambda_0,
-                            lambda_n = lambda_n
-                        )
-                        update_json(os.path.join('.','config_files', model_file), 
-                        TRAINING_PARAMETERS = {
-                            'batch_size' : bs
-                        })
-                        if i>=0:
-                            federated = Federated_LICCHAVI(model_file, fed_file, testing=True)
-                            logging.info(f'training {federated.get_name()} {dataType} for lr={lr}|bs={bs}|lam_0={lambda_0}|\lam_n={lambda_n}')
-                            federated.train(5)
-                        i+=1
+        for lr in [1e-4]:
+            for lambda_0 in [1e-3, 1e-4, 1e-5]:
+                for lambda_n in [10, 1, 0.1]:
+                    for C in [1]:
+                        for bs in [32]:
+                            update_json(
+                                os.path.join('.','config_files', fed_file),
+                                general_model_lr = lr,
+                                node_model_lr = lr,
+                                lambda_0 = lambda_0,
+                                lambda_n = lambda_n,
+                                C = C
+                            )
+                            update_json(os.path.join('.','config_files', model_file), 
+                            TRAINING_PARAMETERS = {
+                                'batch_size' : bs
+                            })
+                            if i>=0:
+                                federated = Federated_LICCHAVI(model_file, fed_file, testing=True)
+                                logging.info(f'training {federated.get_name()} {dataType} for lr={lr}|bs={bs}|lam_0={lambda_0}|\lam_n={lambda_n}')
+                                federated.train(10)
+                            i+=1
         
 
 

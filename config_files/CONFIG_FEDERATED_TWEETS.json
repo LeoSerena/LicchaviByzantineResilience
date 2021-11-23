@@ -20,8 +20,8 @@
     "lambdas": "uniform",
     "general_model_lr": 0.0001,
     "node_model_lr": 0.0001,
-    "lambda_0": 0,
-    "lambda_n": 1,
+    "lambda_0": 1e-05,
+    "lambda_n": 0.1,
     "p_0": 2,
     "p_n": 1,
     "C": 1
