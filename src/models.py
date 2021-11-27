@@ -314,7 +314,6 @@ class NextWordPredictorModel(torch.nn.Module):
         if with_recall:
             f1_recall = top1hit / total
             f3_recall = top3hit / total
-        if with_recall:
             return perplexity, test_loss, f1_recall, f3_recall
         else:
             return perplexity, test_loss

@@ -28,7 +28,7 @@
         "opt": "ADAM",
         "tied_embeddings": 0,
         "q": 2,
-        "gamma": 1e-06
+        "gamma": 1e-05
     },
     "TRAINING_PARAMETERS": {
         "batch_size": 32,
