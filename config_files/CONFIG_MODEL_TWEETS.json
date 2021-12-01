@@ -28,11 +28,11 @@
         "opt": "ADAM",
         "tied_embeddings": 0,
         "q": 2,
-        "gamma": 1e-05
+        "gamma": 1e-06
     },
     "TRAINING_PARAMETERS": {
-        "batch_size": 32,
-        "num_epochs": 3,
+        "batch_size": 8,
+        "num_epochs": 1,
         "fp16": 0,
         "regularizer": "uniform",
         "eval_epoch_0": 1,

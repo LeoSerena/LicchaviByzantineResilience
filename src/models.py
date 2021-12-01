@@ -414,8 +414,8 @@ class NextWordPredictorModel(torch.nn.Module):
             if hasattr(self, 'general_regularizer'):
                 loss = reg_loss + loss
                 reg_loss = self.general_regularizer(node)
-            
-            total_loss = loss + reg_loss
+
+            total_loss = reg_loss + loss
             
             if self.fp16 == 1:
                 with amp.scale_loss(total_loss, self.optimizer) as scaled_loss:

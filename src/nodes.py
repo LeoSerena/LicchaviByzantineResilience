@@ -139,7 +139,7 @@ class NormalDataPoisoningNode(DataPoisoningNode):
         super(NormalDataPoisoningNode, self).__init__(**kwargs)
         self.data = SequenceDataset(
             vocabulary = self.vocabulary,
-            text = sentence * self.N,
+            text = (sentence * self.N)[1:], #[1:] is to avoid the first space
             min_seq_length = self.min_seq_length,
             max_seq_length = self.max_seq_length,
             device = self.device,
