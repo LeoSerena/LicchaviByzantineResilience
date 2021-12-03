@@ -15,7 +15,6 @@
     "sentence": "all work and no play makes jack a dull boy. ",
     "byzantine_datasize": 1000,
     "byzantine_type": "model_forging",
-    "data_sparsity": "normal",
     "nodes_data_folder": "nodes_data_wiki103",
     "lambdas": "uniform",
     "general_model_lr": 0.001,

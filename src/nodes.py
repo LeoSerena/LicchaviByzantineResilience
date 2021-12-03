@@ -103,12 +103,26 @@ class DataPoisoningNode(ByzantineNode):
         self.device = device
         self.N = N
 
+def init_forged_grad(general_model_state_dict):
+    forged_grad = general_model_state_dict.copy()
+    for key in forged_grad:
+        forged_grad[key] = torch.zeros_like(forged_grad[key])
+    return forged_grad
+    
 
-def forge_model(target, general_model, lambda_ = 1, lr = 1):
-    new_state_dict = general_model
-    for key in new_state_dict:
-        new_state_dict[key] = 1 / (lr * lambda_) * (2*target[key] - general_model[key])
-    return new_state_dict
+def compute_forged_grad(prev_model_state_dict, model_state_dict, prev_lr, lr, prev_forged_grad, target):
+    forged_grad = prev_forged_grad.copy()
+    for key in forged_grad:
+        if 'embedding' not in key:
+            forged_grad[key] = forged_grad[key] + (model_state_dict[key] - target[key]) / lr 
+            forged_grad[key] = forged_grad[key] - (prev_model_state_dict[key] - model_state_dict[key]) / prev_lr
+    return forged_grad
+
+def forge_model(target, forged_grad):
+    forged_model = forged_grad.copy()
+    for key in forged_model:
+        forged_model[key] = target[key] - forged_grad[key] / 2
+    return forged_model
         
 
 class ForgingModelNode(ByzantineNode):
@@ -159,18 +173,17 @@ class NormalModelForgingNode(ForgingModelNode):
 class StrategicModelForgingNode(ForgingModelNode):
     def __init__(
         self,
-        general_model,
-        lr = 1,
+        lr,
         **kwargs
     ):
         super(StrategicModelForgingNode, self).__init__(**kwargs)
         self.lr = lr
-        self.general_model = general_model
 
-    def return_model(self):
+    def compute_forged_model(self, general_model_state_dict):
+        attack_model_state_dict = torch.load(self.attack_model_path)
         return forge_model(
-            self.attack_model,
-            self.general_model,
+            attack_model_state_dict,
+            general_model_state_dict,
             lambda_ = self.lambda_,
             lr = self.lr
         )
