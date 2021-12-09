@@ -303,7 +303,7 @@ class NextWordPredictorModel(torch.nn.Module):
 
                     logits = logits[lab,range(len(lab))]
                     logits = logits[lab != 0].cpu().numpy()
-
+                    # logits = np.where(logits == 0, 1e-50, logits) # adds a regularizer to avoid explosion of the log
                     probabilities.append(sum(np.log(logits)))
                     total_tokens += len(logits)
 
@@ -615,7 +615,7 @@ class NextWordPredictorModel(torch.nn.Module):
                     
         return metrics
 
-    def generate(self, vocabulary : Vocabulary, start_text : str, num_words = 100):
+    def generate(self, vocabulary : Vocabulary, start_text : str, num_words = 100, random = True):
         start_text = vocabulary.text_cleaner(start_text)
         tokens = [vocabulary.word_to_idx[w] if w in vocabulary.word_to_idx.keys() else 0 for w in start_text.split(' ')]
         self.eval()
@@ -627,7 +627,10 @@ class NextWordPredictorModel(torch.nn.Module):
                 logits, _ = self(x, hidden)
                 logits = logits[0][-1]
                 p = s(logits).cpu().numpy()
-                word_index = np.random.choice(logits.shape[0], p = p)
+                if random:
+                    word_index = np.random.choice(logits.shape[0], p = p)
+                else:
+                    word_index = np.argmax(p)
                 tokens.append(word_index)
 
         res = ' '.join([vocabulary.idx_to_word[i] for i in tokens])

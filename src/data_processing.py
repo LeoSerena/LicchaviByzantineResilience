@@ -21,8 +21,8 @@ def default_text_cleaner(string):
     string = re.sub(r'-\n', '', string)
     string = re.sub(r"""[*#@&%£ö'ä$ü¨~^)('.+°¢=/><$\[\]`\-,:!?]""", '', string)
     string = re.sub(r'[0-9]', '', string)
-    string = re.sub('unk', ' ', string)
-    string = re.sub('pad', ' ', string)
+    string = re.sub(' unk ', ' ', string)
+    string = re.sub(' pad ', ' ', string)
     return string
 
 def text_cleaner_raw(string):
@@ -30,8 +30,8 @@ def text_cleaner_raw(string):
     string = re.sub(r'\n+', ' ', string)
     string = re.sub(r"""[*#@&%£ö'ä$ü¨~^)('+°¢=/><$\[\]`\-,:!?`]""", '', string)
     string = re.sub(r'[0-9]', '', string)
-    string = re.sub('unk', ' ', string)
-    string = re.sub('pad', ' ', string)
+    string = re.sub(' unk ', ' ', string)
+    string = re.sub(' pad ', ' ', string)
     string = re.sub(r' {2,}', '', string)
     return string
 
@@ -330,8 +330,8 @@ def prepare_wiki_data(
     # 1 node = 1 article
     k = 0
     for (i,art) in enumerate(nodes_data):
-        art = [x for x in re.split(r'\n', art) if len(x) > 200]
-        while len(art) < 10:
+        art = [x for x in re.split(r'\n', art) if len(x) > 20]
+        while len(art) < 100:
             art = train_articles[k]
             art = [x for x in re.split(r'\n', art) if len(x) > 200]
             train_articles = train_articles[1:]

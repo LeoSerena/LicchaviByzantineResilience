@@ -3,10 +3,10 @@ import logging
 import json
 
 import numpy as np
+import matplotlib.pyplot as plt
+import torch
 
-def make_dir_if_not_exists(
-    path : str
-):
+def make_dir_if_not_exists(path : str):
     """
     verifies whether the given path is a dir and if not creates it
     """
@@ -22,8 +22,16 @@ def split_data(
     val_split : float = 0.15,
     test_split : float = 0.15
 ):
-    """
-    Splits the input data into train, validation and test datasets
+    """[Splits the data into 3 splits, train, val and test with the given float splits]
+
+    :param data: [data on wich to apply the split]
+    :type data: list
+    :param val_split: [split of the validation set], defaults to 0.15
+    :type val_split: float, optional
+    :param test_split: [split of the test set], defaults to 0.15
+    :type test_split: float, optional
+    :return: [3 lists : train, val and test set]
+    :rtype: [Tuple(List, List, List)]
     """
     data = np.array(data)
     N = len(data)
@@ -54,3 +62,4 @@ def update_json(json_file, **kwargs):
 
     with open(json_file, 'w') as f:
         json.dump(data, f, indent = 4)
+

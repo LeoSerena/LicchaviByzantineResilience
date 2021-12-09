@@ -49,7 +49,7 @@ class UserNode(Node):
         with open(os.path.join(datafolder, self.file), 'rb') as f:
             data = pickle.load(f)
 
-        train_set, val_set, test_set = split_data(data[:5000])
+        train_set, val_set, test_set = split_data(data[:1000])
 
         self.data = SequenceDataset(
             vocabulary = vocabulary,
@@ -110,12 +110,13 @@ def init_forged_grad(general_model_state_dict):
     return forged_grad
     
 
-def compute_forged_grad(prev_model_state_dict, model_state_dict, prev_lr, lr, prev_forged_grad, target):
+def compute_forged_grad(prev_model_state_dict, model_state_dict, prev_lr, lr, prev_forged_grad, target, clamp = 1):
     forged_grad = prev_forged_grad.copy()
     for key in forged_grad:
         if 'embedding' not in key:
             forged_grad[key] = forged_grad[key] + (model_state_dict[key] - target[key]) / lr 
             forged_grad[key] = forged_grad[key] - (prev_model_state_dict[key] - model_state_dict[key]) / prev_lr
+            forged_grad[key] = torch.clamp(forged_grad[key], min = -clamp, max = clamp)
     return forged_grad
 
 def forge_model(target, forged_grad):

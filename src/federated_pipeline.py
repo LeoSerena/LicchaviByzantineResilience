@@ -8,9 +8,8 @@ import gc
 from datetime import date
 
 import numpy as np
-from torch.functional import istft
-from torch.jit import Error
 from tqdm import tqdm
+import torch
 
 sys.path.append('.')
 from src.data_processing import  SequenceDataset
@@ -18,11 +17,9 @@ from src.models import NextWordPredictorModel, init_model
 from src.utils import make_dir_if_not_exists, update_json
 from src.nodes import *
 
-import torch
-
 class Federated():
     """
-    Abstract federated class implementing a Federated setup
+    Abstract federated class implementing a Federated setup.
     """
     def __init__(
         self,
@@ -161,6 +158,7 @@ class Federated():
                 'max_seq_length' : self.federated_args['max_seq_length'],
                 'device' : self.federated_args['DEVICE']
             }
+            self.strat = False
             if node_id < self.num_nodes - self.num_bysantine + 1:
                 self.nodes[node_id] = UserNode(
                     datafolder = nodes_path,
@@ -182,15 +180,26 @@ class Federated():
                 elif self.byzantine_type == 'staregic_data_poisoning':
                     self.nodes[node_id] = StrategicDataPoisoningNode(**parameters)
                 else:
-                    raise Error(f'Byzantine type {self.byzantine_type} not understood')
+                    raise AttributeError(f'Byzantine type {self.byzantine_type} not understood')
 
         logging.info(f'generated {self.num_nodes} nodes with {self.num_bysantine} byzantine')
 
     def get_node_dataloader(self, node, val = False):
+        """
+        Returns a torch.utils.data.DataLoader with the test set of the node
+        or the validation set if val = True
+
+        :param node: the node to extract the data from
+        :type node: Node
+        :param val: wether to use the validation or test set, defaults to False
+        :type val: bool, optional
+        :return: the correspoinding dataloader
+        :rtype: torch.utils.data.Dataloader
+        """
         if val:
             return torch.utils.data.DataLoader(
                 node.val,
-                batch_size = self.pipeline_args['TRAINING_PARAMETERS']['batch_size'],
+                batch_size = 1,
                 drop_last = True,
                 shuffle = False
             )
@@ -239,9 +248,9 @@ class Federated():
             )
             self.load_embeddings(temp_model)
             temp_model.freeze_embeddings()
-            train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size = 32, drop_last = True, shuffle = False)
-            val_dataloader = torch.utils.data.DataLoader(val_dataset, batch_size = 32, drop_last = True, shuffle = False)
-            temp_model.fit(train_dataloader, val_dataloader, num_epochs=20)
+            train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size = 8, drop_last = True, shuffle = False)
+            val_dataloader = torch.utils.data.DataLoader(val_dataset, batch_size = 8, drop_last = True, shuffle = False)
+            temp_model.fit(train_dataloader, val_dataloader, num_epochs=100)
             state_dict = temp_model.state_dict()
             
             torch.save(state_dict, self.attack_model_path)
@@ -258,7 +267,7 @@ class Federated():
         )
         self.attack_dataloader = torch.utils.data.DataLoader(
             self.attack_dataset,
-            batch_size = 32,
+            batch_size = 1,
             drop_last = True,
             shuffle = False
         )
@@ -337,12 +346,12 @@ class Federated():
             optim_stat_dict = torch.load(optim_path)
             model.optimizer.load_state_dict(optim_stat_dict)
 
-    def generate_general(self, start_text : str, num_words : int = 100):
-        return self.general_model.generate(start_text=start_text, vocabulary = self.vocabulary, num_words=num_words)
+    def generate_general(self, start_text : str, num_words : int = 100, random = True):
+        return self.general_model.generate(start_text=start_text, vocabulary = self.vocabulary, num_words=num_words, random = random)
 
-    def generate_node(self, start_text : str, node_id : int, num_words : int = 100):
+    def generate_node(self, start_text : str, node_id : int, num_words : int = 100, random = True):
         self.load_weights(node_id, self.user_model)
-        return self.user_model.generate(start_text=start_text, vocabulary = self.vocabulary, num_words=num_words)
+        return self.user_model.generate(start_text=start_text, vocabulary = self.vocabulary, num_words=num_words, random = random)
 
     def train(self, num_rounds, save_results = True):
         self.results = {}
@@ -413,7 +422,7 @@ class Federated():
         raise NotImplementedError
 
     @abstractclassmethod
-    def nodes_epoch_step(self, epoch):
+    def nodes_epoch_step(self, round):
         raise NotImplementedError
 
     @abstractclassmethod
@@ -424,7 +433,9 @@ class Federated():
     def get_name(self):
         raise NotImplementedError
 
-
+    @abstractclassmethod
+    def update_trackers(self):
+        raise NotImplementedError
 
 
 
@@ -550,6 +561,7 @@ class Federated_AVG(Federated):
 
 
     def evaluate_metrics(self, round):
+        start_text = ' '.join(self.federated_args['sentence'].split(' ')[:5])
         res = self.results[round]
         val_dataloader = torch.utils.data.DataLoader(
             self.val_dataset,
@@ -559,7 +571,7 @@ class Federated_AVG(Federated):
         )
         res[f'perplexity'],  res[f'loss'], res[f'f1_recall'], res[f'f3_recall'] \
             = self.general_model.perplexity(val_dataloader, with_tqdm = False, with_recall = True)
-        res[f'generate'] = self.general_model.generate(self.vocabulary, 'all work and no play', 5)
+        res[f'generate'] = self.generate_general(start_text, 5, random = False)
         res[f'attack_perplexity'],_ = self.general_model.perplexity(self.attack_dataloader,with_tqdm = False,with_recall = False)
 
         for node_id, node in self.nodes.items():
@@ -569,13 +581,6 @@ class Federated_AVG(Federated):
                     res[f'perplexity_{node_id}'],  res[f'loss_{node_id}'], 
                     res[f'f1_recall_{node_id}'], res[f'f3_recall_{node_id}']
                 ) = self.general_model.perplexity(val_dataloader, with_tqdm = False, with_recall = True)
-                res[f'generate_{node_id}'] = self.general_model.generate(self.vocabulary, 'all work and no play', 5)
-                res[f'attack_perplexity_{node_id}'],_ = self.general_model.perplexity(
-                    self.attack_dataloader,
-                    with_tqdm = False,
-                    with_recall = False
-                )
-
 
 
 
@@ -729,28 +734,81 @@ class Federated_LICCHAVI(Federated):
         if round >  0:
             general_model_reg_loss = self.general_model.regularizer()
             general_model_reg_loss.backward()
+            if self.strat:
+                self.init_grad_tracker(round)
             for node_id, node in self.nodes.items():
                 self.load_weights(node_id, self.user_model)
-                for p in self.user_model.parameters():
-                    p.requires_grad = False
+                self.freeze_node_model()
                 other_reg_loss = self.models_difference(node)
                 if other_reg_loss > 0:
                     other_reg_loss.backward()
+                if self.strat:
+                    self.update_grad_tracker(round)
+            if self.strat:
+                self.update_general_grad(round)
             self.general_model.optimizer.step()
         self.evaluate_metrics_general(round)
 
     def update_trackers(self):
+        """Keeps track of the previous model state as well as the previous learning rate for strategic model forging
+        """
         self.prev_lr = self.general_model.optimizer.state_dict()['param_groups'][0]['lr']
         self.prev_general_model_state_dict = self.general_model.state_dict().copy()
 
+    def init_grad_tracker(self, round):
+        if round == 1:
+            self.gradients = {
+                'max' : {1 : []},
+                'avg' : {1 : []},
+                'layers' : []
+            }
+            with torch.no_grad():
+                self.grad = {}
+                for n,p in self.general_model.named_parameters():
+                    if p.requires_grad and 'bias' not in n:
+                        self.grad[n] = p.grad.cpu().numpy()
+                        self.gradients['layers'].append(n)
+
+        else:
+            self.gradients['max'].update({round : []})
+            self.gradients['avg'].update({round : []})
+
+    def update_grad_tracker(self, round):
+        with torch.no_grad():
+            gradients_max = []
+            gradients_avg = []
+            for n,p in self.general_model.named_parameters():
+                if p.requires_grad and 'bias' not in n:
+                    current_grad = p.grad.cpu().numpy()
+                    diff = (current_grad - self.grad[n]).flatten()
+                    self.grad[n] = current_grad
+                    gradients_max.append(np.max(np.abs(diff)))
+                    gradients_avg.append(np.mean(np.abs(diff)))
+            self.gradients['max'][round].append(gradients_max)
+            self.gradients['avg'][round].append(gradients_avg)
+
+    def update_general_grad(self, round):
+        with torch.no_grad():
+            gradients_max = []
+            gradients_avg = []
+            for n,p in self.general_model.named_parameters():
+                if p.requires_grad and 'bias' not in n:
+                    current_grad = p.grad.cpu().numpy()
+                    gradients_max.append(np.max(np.abs(current_grad)))
+                    gradients_avg.append(np.mean(np.abs(current_grad)))
+            self.gradients['max'][round].append(gradients_max)
+            self.gradients['avg'][round].append(gradients_avg)
+            self.results['gradients'] = self.gradients
+
     def evaluate_metrics_node(self, node_id, node, round):
+        start_text = ' '.join(self.federated_args['sentence'].split(' ')[:5])
         val_dataloader = self.get_node_dataloader(node, val = True)
         res = self.results[round]
         (
             res[f'perplexity_{node_id}'],  res[f'loss_{node_id}'], 
             res[f'f1_recall_{node_id}'], res[f'f3_recall_{node_id}']
         ) = self.user_model.perplexity(val_dataloader, with_tqdm = False, with_recall = True)
-        res[f'generate_{node_id}'] = self.user_model.generate(self.vocabulary, 'all', 10)
+        res[f'generate_{node_id}'] = self.user_model.generate(self.vocabulary, start_text, 5)
         res[f'attack_perplexity_{node_id}'],_ = self.user_model.perplexity(
             self.attack_dataloader,
             with_tqdm = False,
@@ -758,6 +816,7 @@ class Federated_LICCHAVI(Federated):
         )
 
     def evaluate_metrics_general(self, round):
+        start_text = ' '.join(self.federated_args['sentence'].split(' ')[:5])
         val_dataloader = torch.utils.data.DataLoader(
                 self.val_dataset,
                 batch_size = self.pipeline_args['TRAINING_PARAMETERS']['batch_size'],
@@ -769,7 +828,7 @@ class Federated_LICCHAVI(Federated):
             res[f'perplexity'],  res[f'loss'], 
             res[f'f1_recall'], res[f'f3_recall']
         ) = self.general_model.perplexity(val_dataloader, with_tqdm = False, with_recall = True)
-        res[f'generate'] = self.general_model.generate(self.vocabulary, 'all work and no play', 5)
+        res[f'generate'] = self.general_model.generate(self.vocabulary, start_text, 5)
         res[f'attack_perplexity'],_ = self.general_model.perplexity(
             self.attack_dataloader,
             with_tqdm = False,
@@ -797,12 +856,12 @@ def grid_search(federated_alg, dataType):
         model_file = "CONFIG_MODEL_WIKI.json"
         fed_file = "CONFIG_FEDERATED_WIKI.json"
     i=0
-    if federated_alg == 'FedAVG-':
+    if federated_alg == 'FedAVG':
         # For FedAVG, we need to grid search learning rates, nodes batch_size, nodes epochs and nodes proportion
         # These are the same hyperparameters tuned in the keyboard federated paper
-        for lr in [1e-5]:
-            for bs in [8,16,32]:
-                for num_epochs in [3]:
+        for lr in [1e-4]:
+            for bs in [8]:
+                for num_epochs in [2,3]:
                     for C in [1]:
                         for gamma in [1e-5]:
                             update_json(os.path.join('.','config_files', fed_file), 
@@ -828,12 +887,12 @@ def grid_search(federated_alg, dataType):
                             i+=1
     elif federated_alg =='LICCHAVI_L1':
         federated = Federated_LICCHAVI
-        for model_lr in [1e-3]:
+        for model_lr in [1e-5]:
             for lambda_0 in [1e-6]:
                 for node_lr in [1e-3]:
                     for num_epochs in [2,3]:
                         for C in [1]:
-                            for bs in [32]:
+                            for bs in [16]:
                                 for gamma in [1e-5]:
                                     update_json(
                                         os.path.join('.','config_files', fed_file),
@@ -865,10 +924,10 @@ def grid_search(federated_alg, dataType):
         federated = Federated_LICCHAVI
         for model_lr in [1e-3]:
             for lambda_0 in [1e-6]:
-                for node_lr in [1e-3]:
+                for node_lr in [1e-4]:
                     for num_epochs in [2,3]:
                         for C in [1]:
-                            for bs in [32]:
+                            for bs in [16]:
                                 for gamma in [1e-5]:
                                     update_json(
                                         os.path.join('.','config_files', fed_file),
@@ -901,22 +960,22 @@ def attack(federated_alg, dataType, attack_type):
     if dataType == 'tweet':
         model_file = "CONFIG_MODEL_TWEETS.json"
         fed_file = "CONFIG_FEDERATED_TWEETS.json"
-        byzantine_datsize = 6000
+        byzantine_datasize = 6000
     else:
         model_file = "CONFIG_MODEL_WIKI.json"
         fed_file = "CONFIG_FEDERATED_WIKI.json"
-
+        byzantine_datasize = 100
     NUM_ROUNDS = 20
     i=0
     if federated_alg == 'FedAVG':
         # For FedAVG, we need to grid search learning rates, nodes batch_size, nodes epochs and nodes proportion
         # These are the same hyperparameters tuned in the keyboard federated paper
-        lr = 1e-5
+        lr = 1e-4
         bs = 32
         gamma = 1e-5
-        num_epochs = 3
+        num_epochs = 2
         C = 1
-        for num_training_nodes in [50]:
+        for num_training_nodes in [100]:
             for f in [0, 0.1, 0.3, 0.5]:
                 num_byzantine = int(num_training_nodes * f)
                 update_json(os.path.join('.','config_files', fed_file),
@@ -925,7 +984,7 @@ def attack(federated_alg, dataType, attack_type):
                     C = C,
                     num_training_nodes = num_training_nodes,
                     num_byzantine = num_byzantine,
-                    byzantine_datasize = byzantine_datsize,
+                    byzantine_datasize = byzantine_datasize,
                     byzantine_type = attack_type,
                     results_folder = 'attacks_results',
                 )
@@ -947,14 +1006,14 @@ def attack(federated_alg, dataType, attack_type):
     elif federated_alg =='LICCHAVI_L1':
         federated = Federated_LICCHAVI
         node_model_lr = 1e-3
-        general_model_lr = 1e-2
+        general_model_lr = 1e-3
         lambda_0 = 1e-6
         gamma = 1e-5
         lambda_n = 1
-        num_epochs = 3
+        num_epochs = 1
         C = 1
         bs = 32
-        for num_training_nodes in [50]:
+        for num_training_nodes in [100]:
             for f in [0, 0.1, 0.3, 0.5]:
                 num_byzantine = int(num_training_nodes * f)
                 update_json(
@@ -967,6 +1026,7 @@ def attack(federated_alg, dataType, attack_type):
                     p_n = 1, # this determines L1 loss
                     num_training_nodes = num_training_nodes,
                     num_byzantine = num_byzantine,
+                    byzantine_datasize = byzantine_datasize,
                     byzantine_type = attack_type,
                     results_folder = 'attacks_results'
                 )
@@ -988,13 +1048,13 @@ def attack(federated_alg, dataType, attack_type):
     elif federated_alg =='LICCHAVI_L2':
         federated = Federated_LICCHAVI
         node_model_lr = 1e-3
-        general_model_lr = 1e-2
+        general_model_lr = 1e-3
         lambda_0 = 1e-6
         lambda_n = 1
         num_epochs = 3
         C = 1
         bs = 32
-        for num_training_nodes in [50]:
+        for num_training_nodes in [100]:
             for f in [0, 0.1, 0.3, 0.5]:
                 num_byzantine = int(num_training_nodes * f)
                 update_json(
@@ -1007,6 +1067,7 @@ def attack(federated_alg, dataType, attack_type):
                     p_n = 2, # this determines L2 loss
                     num_training_nodes = num_training_nodes,
                     num_byzantine = num_byzantine,
+                    byzantine_datasize = byzantine_datasize,
                     byzantine_type = attack_type,
                     results_folder = 'attacks_results'
                 )
