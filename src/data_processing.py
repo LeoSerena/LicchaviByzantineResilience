@@ -17,7 +17,14 @@ import torchtext
 sys.path.append('.')
 from src.utils import make_dir_if_not_exists
 
-def default_text_cleaner(string):
+def default_text_cleaner(string : str):
+    """Cleans a given string.
+
+    :param string: the string to be cleaned
+    :type string: str
+    :return: the cleaned string
+    :rtype: str
+    """    
     string = re.sub(r'-\n', '', string)
     string = re.sub(r"""[*#@&%£ö'ä$ü¨~^)('.+°¢=/><$\[\]`\-,:!?]""", '', string)
     string = re.sub(r'[0-9]', '', string)
@@ -26,6 +33,16 @@ def default_text_cleaner(string):
     return string
 
 def text_cleaner_raw(string):
+    """Cleans a given string. The difference with
+    the default is that it keeps dots <.> and removes
+    sequences of more than one end of line or 2 or more
+    spaces.
+
+    :param string: the string to be cleaned
+    :type string: str
+    :return: the cleaned string
+    :rtype: str
+    """  
     string = re.sub(r'-\n', '', string)
     string = re.sub(r'\n+', ' ', string)
     string = re.sub(r"""[*#@&%£ö'ä$ü¨~^)('+°¢=/><$\[\]`\-,:!?`]""", '', string)
@@ -43,6 +60,21 @@ class Vocabulary():
         max_voc_size : int = 10000,
         min_word_occ : int = 2
     ):
+        """Vocabulary generated around textual data. Serves to
+        convert ids to words and conversely.
+
+        :param tokenizer: a tokenizer that, given raw textual data will
+        generate a sequence of tokens
+        :type tokenizer: str -> list[str]
+        :param text_cleaner: cleaning function
+        :type text_cleaner: str ->  str
+        :param max_voc_size: maximum vocabulary size, defaults to 10000
+        :type max_voc_size: int, optional
+        :param min_word_occ: minimum number of times a wird most occur 
+        to be taken into acount in the vocabulary, defaults to 2
+        :type min_word_occ: int, optional
+        :raises NotImplementedError: raises an exception if instantiated
+        """    
         if self.__class__ == Vocabulary:
             raise NotImplementedError(
         """
@@ -66,6 +98,12 @@ class Vocabulary():
         self.max_voc_size = max_voc_size
 
     def build_vocab(self, vocab):
+        """builds the main access methods of the vocabulary, namely
+        word_to_idx, vocab and idx_to_word.
+
+        :param vocab: dictionary of words and their occurrences
+        :type vocab: dict
+        """
         # sort voc and remove words not occuring enough
         self.vocab = {
             k: v 
@@ -96,6 +134,11 @@ class FromRawTextVocabulary(Vocabulary):
         text : str,
         **kwargs
     ):
+        """Vocabulary builder from raw textual data
+
+        :param text: input textual data
+        :type text: str
+        """
         super(FromRawTextVocabulary, self).__init__(**kwargs)
         text = self.text_cleaner(text)
         tokens = self.tokenizer(text)
@@ -113,6 +156,11 @@ class FromTweetsVocabulary(Vocabulary):
         tweets : List[str],
         **kwargs
     ):
+        """Vocabulary builder from list of texts
+
+        :param tweets: list of textual inputs
+        :type tweets: List[str]
+        """    
         super(FromTweetsVocabulary, self).__init__(**kwargs)
         vocab = {}
         for tweet in tqdm(tweets):
@@ -135,6 +183,22 @@ class SequenceDataset(torch.utils.data.Dataset):
         device : str,
         with_tqdm = True
     ):
+        """Dataset class containing sequences of token ids each of same length.
+
+        :param vocabulary: A vocabulary to map words to ids
+        :type vocabulary: Vocabulary
+        :param text: The text to create the dataset from
+        :type text: Union[str, List[str]]
+        :param min_seq_length: The minimum length for a sequence to be
+        considered
+        :type min_seq_length: int
+        :param max_seq_length: The length of the sequences
+        :type max_seq_length: int
+        :param device: The device to store the sequence to
+        :type device: str
+        :param with_tqdm: Disaplays the sequence creation progress, defaults to True
+        :type with_tqdm: bool, optional
+        """
         self.vocabulary = vocabulary
         self.max_seq_length = max_seq_length
         self.device = device
@@ -158,7 +222,15 @@ class SequenceDataset(torch.utils.data.Dataset):
             if len(sequence) > min_seq_length and sum(sequence) > 1
         ])
         
-    def pad_and_truncate(self, sequence):
+    def pad_and_truncate(self, sequence : list(int)):
+        """Given a list of integers, will split it onto a list of lists of
+        equal self.max_seq_length size and add 0s to the last one to fill it
+
+        :param sequence: the list of token ids
+        :type sequence: list[int]
+        :return: a list of lists of token ids
+        :rtype: list[list[int]]
+        """
         sequence = np.array(sequence)
         # this makes the sequence the correct size by adding padding at the last one
         rest = len(sequence) % self.max_seq_length
@@ -178,6 +250,13 @@ class SequenceDataset(torch.utils.data.Dataset):
         return total
 
     def get_idx(self, token):
+        """Gets the id of the token from the vocabulary
+
+        :param token: a word token
+        :type token: str
+        :return: the corresponding id and 0 if not in the vocabulary
+        :rtype: int
+        """
         try:
             return self.vocabulary.word_to_idx[token]
         except KeyError:
@@ -200,6 +279,24 @@ def prepare_tweets_data(
     SEED = 23,
     nodes_data_folder = 'nodes_data'
 ):
+    """Generates the data for pretraining the language model as
+    well as the nodes data for federated learning.
+
+    :param N_USERS: number of nodes data to generate, defaults to 1000
+    :type N_USERS: int, optional
+    :param data_path: where the input data is stored, defaults to 'data'
+    :type data_path: str, optional
+    :param id_: the file id to take as main, defaults to 2
+    :type id_: int, optional
+    :param val_split: split size of the validation set, defaults to 0.2
+    :type val_split: float, optional
+    :param test_split: split size of the test set, defaults to 0.2
+    :type test_split: float, optional
+    :param SEED: the numpy seed for shuffle, defaults to 23
+    :type SEED: int, optional
+    :param nodes_data_folder: where to save the nodes data, defaults to 'nodes_data'
+    :type nodes_data_folder: str, optional
+    """
     tweets_file = f'tweets_{id_}.csv'
 
     # user_tweets_file = f'users_tweets_{id_}.csv'
@@ -286,12 +383,25 @@ def prepare_tweets_data(
         """)
 
 def prepare_wiki_data(
-    N_USERS,
-    SEED,
-    data_path,
-    nodes_data_folder,
-    data_name
+    N_USERS : int,
+    SEED : int,
+    data_path : str,
+    nodes_data_folder : str,
+    data_name : str
 ):
+    """prepares the pretrain and nodes data for the WikiText103 dataset.
+
+    :param N_USERS: [description]
+    :type N_USERS: [type]
+    :param SEED: [description]
+    :type SEED: [type]
+    :param data_path: [description]
+    :type data_path: [type]
+    :param nodes_data_folder: [description]
+    :type nodes_data_folder: [type]
+    :param data_name: [description]
+    :type data_name: [type]
+    """
     np.random.seed(SEED)
     # Whether to use WikiText-2 or WikiText103
     # Path to data folder
@@ -355,7 +465,6 @@ def prepare_wiki_data(
     """)
 
 if __name__ == '__main__':
-
     logging.basicConfig(filename='logs/logs.log', level=logging.DEBUG)
     if sys.argv[1] == 'wiki':
         with open('./config_files/CONFIG_FEDERATED_WIKI.json', 'r') as f:
