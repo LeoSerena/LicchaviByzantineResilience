@@ -130,6 +130,7 @@ class ForgingModelNode(ByzantineNode):
     def __init__(
         self,
         attack_model_path,
+        N,
         **kwargs
     ):
         if self.__class__ ==  ForgingModelNode:
@@ -140,7 +141,7 @@ class ForgingModelNode(ByzantineNode):
         kwargs.pop('device')
         super(ForgingModelNode, self).__init__(**kwargs)
         self.attack_model_path = attack_model_path
-        self.data = [0]*3000
+        self.data = [0]*N
 
     def return_model(self):
         raise NotImplementedError

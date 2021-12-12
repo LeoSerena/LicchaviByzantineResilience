@@ -159,6 +159,8 @@ class Federated():
                 'device' : self.federated_args['DEVICE']
             }
             self.strat = False
+            if self.byzantine_type == 'strategic_model_forging':
+                self.strat = True
             if node_id < self.num_nodes - self.num_bysantine + 1:
                 self.nodes[node_id] = UserNode(
                     datafolder = nodes_path,
@@ -166,16 +168,17 @@ class Federated():
                 )
             else:
                 if self.byzantine_type == 'data_poisoning':
-                    parameters['N'] = self.byzantine_datasize
+                    parameters['N'] = self.byzantine_datasize * (2 if self.pipeline_args['DATA_PARAMETERS']['data_name'] == 'tweets' else 1)
                     parameters['sentence'] = self.federated_args['sentence']
                     self.nodes[node_id] = NormalDataPoisoningNode(**parameters)
                 elif self.byzantine_type == 'model_forging':
                     parameters['attack_model_path'] = self.attack_model_path
+                    parameters['N'] = self.byzantine_datasize
                     self.nodes[node_id] = NormalModelForgingNode(**parameters)
                 elif self.byzantine_type == 'strategic_model_forging':
-                    self.strat = True
                     parameters['attack_model_path'] = self.attack_model_path
                     parameters['lr'] = self.federated_args['general_model_lr']
+                    parameters['N'] = self.byzantine_datasize
                     self.nodes[node_id] = StrategicModelForgingNode(**parameters)
                 elif self.byzantine_type == 'staregic_data_poisoning':
                     self.nodes[node_id] = StrategicDataPoisoningNode(**parameters)
@@ -724,6 +727,10 @@ class Federated_LICCHAVI(Federated):
     def general_model_update(self, round):
         if self.strat:
             self.update_trackers()
+            self.results[round]['L1'] = []
+            self.results[round]['max'] = []
+            self.results[round]['avg'] = []
+            self.results['layers'] = [n for (n,p) in self.general_model.named_parameters() if (p.requires_grad and 'bias' not in n)]
         # unfreez general model parameters except embeddings
         for p in self.general_model.parameters():
             p.grad = None
@@ -733,19 +740,19 @@ class Federated_LICCHAVI(Federated):
         # adds the general model regularization loss and its gradient
         if round >  0:
             general_model_reg_loss = self.general_model.regularizer()
-            general_model_reg_loss.backward()
             if self.strat:
-                self.init_grad_tracker(round)
+                self.compute_grads(general_model_reg_loss, round) # stores gradients for regularization
+            general_model_reg_loss.backward()
             for node_id, node in self.nodes.items():
                 self.load_weights(node_id, self.user_model)
                 self.freeze_node_model()
                 other_reg_loss = self.models_difference(node)
+                if self.strat:
+                    self.compute_grads(other_reg_loss, round) # stores gradients for every node
                 if other_reg_loss > 0:
                     other_reg_loss.backward()
-                if self.strat:
-                    self.update_grad_tracker(round)
-            if self.strat:
-                self.update_general_grad(round)
+            if self.strat:                 
+                self.add_grad(round) # stores general gradient that is in the .grad of the parameters
             self.general_model.optimizer.step()
         self.evaluate_metrics_general(round)
 
@@ -755,50 +762,25 @@ class Federated_LICCHAVI(Federated):
         self.prev_lr = self.general_model.optimizer.state_dict()['param_groups'][0]['lr']
         self.prev_general_model_state_dict = self.general_model.state_dict().copy()
 
-    def init_grad_tracker(self, round):
-        if round == 1:
-            self.gradients = {
-                'max' : {1 : []},
-                'avg' : {1 : []},
-                'layers' : []
-            }
-            with torch.no_grad():
-                self.grad = {}
-                for n,p in self.general_model.named_parameters():
-                    if p.requires_grad and 'bias' not in n:
-                        self.grad[n] = p.grad.cpu().numpy()
-                        self.gradients['layers'].append(n)
+    def compute_grads(self, reg, round):
+        gradients = torch.autograd.grad(
+            reg,
+            [p for (n,p) in self.general_model.named_parameters() if (p.requires_grad and 'bias' not in n)],
+            retain_graph=True
+        )
+        self.add_grad_to_results(gradients, round)
 
-        else:
-            self.gradients['max'].update({round : []})
-            self.gradients['avg'].update({round : []})
+    def add_grad(self, round):
+        gradients = [p.grad for (n,p) in self.general_model.named_parameters() if (p.requires_grad and 'bias' not in n)]
+        self.add_grad_to_results(gradients, round)
 
-    def update_grad_tracker(self, round):
-        with torch.no_grad():
-            gradients_max = []
-            gradients_avg = []
-            for n,p in self.general_model.named_parameters():
-                if p.requires_grad and 'bias' not in n:
-                    current_grad = p.grad.cpu().numpy()
-                    diff = (current_grad - self.grad[n]).flatten()
-                    self.grad[n] = current_grad
-                    gradients_max.append(np.max(np.abs(diff)))
-                    gradients_avg.append(np.mean(np.abs(diff)))
-            self.gradients['max'][round].append(gradients_max)
-            self.gradients['avg'][round].append(gradients_avg)
-
-    def update_general_grad(self, round):
-        with torch.no_grad():
-            gradients_max = []
-            gradients_avg = []
-            for n,p in self.general_model.named_parameters():
-                if p.requires_grad and 'bias' not in n:
-                    current_grad = p.grad.cpu().numpy()
-                    gradients_max.append(np.max(np.abs(current_grad)))
-                    gradients_avg.append(np.mean(np.abs(current_grad)))
-            self.gradients['max'][round].append(gradients_max)
-            self.gradients['avg'][round].append(gradients_avg)
-            self.results['gradients'] = self.gradients
+    def add_grad_to_results(self, gradients, round):
+        L1 = [torch.linalg.norm(x, 1).item() for x in gradients]
+        max = [torch.max(x).item() for x in gradients]
+        avg = [torch.mean(x).item() for x in gradients]
+        self.results[round]['L1'].append(L1)
+        self.results[round]['max'].append(max)
+        self.results[round]['avg'].append(avg)
 
     def evaluate_metrics_node(self, node_id, node, round):
         start_text = ' '.join(self.federated_args['sentence'].split(' ')[:5])
@@ -960,20 +942,20 @@ def attack(federated_alg, dataType, attack_type):
     if dataType == 'tweet':
         model_file = "CONFIG_MODEL_TWEETS.json"
         fed_file = "CONFIG_FEDERATED_TWEETS.json"
-        byzantine_datasize = 6000
+        byzantine_datasize = 840
     else:
         model_file = "CONFIG_MODEL_WIKI.json"
         fed_file = "CONFIG_FEDERATED_WIKI.json"
-        byzantine_datasize = 100
+        byzantine_datasize = 96
     NUM_ROUNDS = 20
     i=0
     if federated_alg == 'FedAVG':
         # For FedAVG, we need to grid search learning rates, nodes batch_size, nodes epochs and nodes proportion
         # These are the same hyperparameters tuned in the keyboard federated paper
-        lr = 1e-4
+        lr = 1e-5
         bs = 32
         gamma = 1e-5
-        num_epochs = 2
+        num_epochs = 3
         C = 1
         for num_training_nodes in [100]:
             for f in [0, 0.1, 0.3, 0.5]:
@@ -1008,9 +990,8 @@ def attack(federated_alg, dataType, attack_type):
         node_model_lr = 1e-3
         general_model_lr = 1e-3
         lambda_0 = 1e-6
-        gamma = 1e-5
         lambda_n = 1
-        num_epochs = 1
+        num_epochs = 3
         C = 1
         bs = 32
         for num_training_nodes in [100]:
@@ -1037,8 +1018,7 @@ def attack(federated_alg, dataType, attack_type):
                     'num_epochs' : num_epochs
                 },
                 MODEL_PARAMETERS = {
-                    "fp16": 0,
-                    'gamma' : gamma
+                    "fp16": 0
                 })
                 if i>=0:
                     federated = Federated_LICCHAVI(model_file, fed_file, testing=True)
