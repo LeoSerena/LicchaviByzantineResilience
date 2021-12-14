@@ -5,7 +5,7 @@ import logging
 import pickle
 import sys
 import json
-from typing import List, Union
+from typing import List, Union, Callable
 
 from tqdm import tqdm
 import pandas as pd
@@ -17,7 +17,7 @@ import torchtext
 sys.path.append('.')
 from src.utils import make_dir_if_not_exists
 
-def default_text_cleaner(string : str):
+def default_text_cleaner(string : str) -> str:
     """Cleans a given string.
 
     :param string: the string to be cleaned
@@ -32,7 +32,7 @@ def default_text_cleaner(string : str):
     string = re.sub(' pad ', ' ', string)
     return string
 
-def text_cleaner_raw(string):
+def text_cleaner_raw(string) -> str:
     """Cleans a given string. The difference with
     the default is that it keeps dots <.> and removes
     sequences of more than one end of line or 2 or more
@@ -55,7 +55,7 @@ def text_cleaner_raw(string):
 class Vocabulary():
     def __init__(
         self,
-        tokenizer,
+        tokenizer : Callable[[str], List[str]],
         text_cleaner,
         max_voc_size : int = 10000,
         min_word_occ : int = 2
@@ -222,7 +222,7 @@ class SequenceDataset(torch.utils.data.Dataset):
             if len(sequence) > min_seq_length and sum(sequence) > 1
         ])
         
-    def pad_and_truncate(self, sequence : list(int)):
+    def pad_and_truncate(self, sequence : List[int]) -> List[List[int]]:
         """Given a list of integers, will split it onto a list of lists of
         equal self.max_seq_length size and add 0s to the last one to fill it
 

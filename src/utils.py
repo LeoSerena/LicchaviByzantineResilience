@@ -1,12 +1,11 @@
 import os
 import logging
 import json
+from typing import List, Tuple
 
 import numpy as np
-import matplotlib.pyplot as plt
-import torch
 
-def make_dir_if_not_exists(path : str):
+def make_dir_if_not_exists(path : str) -> bool:
     """
     verifies whether the given path is a dir and if not creates it
     """
@@ -21,17 +20,17 @@ def split_data(
     data : list,
     val_split : float = 0.15,
     test_split : float = 0.15
-):
-    """[Splits the data into 3 splits, train, val and test with the given float splits]
+) -> Tuple[List, List, List]:
+    """Splits the data into 3 splits, train, val and test with the given float splits
 
-    :param data: [data on wich to apply the split]
+    :param data: data on wich to apply the split
     :type data: list
-    :param val_split: [split of the validation set], defaults to 0.15
+    :param val_split: split of the validation set, defaults to 0.15
     :type val_split: float, optional
-    :param test_split: [split of the test set], defaults to 0.15
+    :param test_split: split of the test set, defaults to 0.15
     :type test_split: float, optional
-    :return: [3 lists : train, val and test set]
-    :rtype: [Tuple(List, List, List)]
+    :return: 3 lists : train, val and test set
+    :rtype: Tuple[List, List, List]
     """
     data = np.array(data)
     N = len(data)
