@@ -49,7 +49,12 @@ def split_data(
 
     return list(train_set), list(val_set), list(test_set)
 
-def update_json(json_file, **kwargs):    
+def update_json(json_file, **kwargs):
+    """Updates the given .json file with the given key-values as argument.
+
+    Args:
+        json_file (str): the path to the json file
+    """
     with open(json_file, 'r') as f:
         data = json.load(f)
         for key, val in kwargs.items():
