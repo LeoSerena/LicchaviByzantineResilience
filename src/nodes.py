@@ -166,7 +166,7 @@ def compute_forged_grad(
     prev_forged_grad : OrderedDict,
     target : OrderedDict,
     clamp : float= 1
-):
+) -> OrderedDict:
     """computes the forged gradient according to the paper:
     $$
     g_B^{(t+1)} = g_B^{(t)} + \frac{\theta_{t+1} - \theta_B}{\gamma_{t+1}} - \frac{\theta_{t} - \theta_{t+1}}{\gamma_{t}}
@@ -200,7 +200,7 @@ def compute_forged_grad(
 def forge_model(
     target : OrderedDict, 
     forged_grad : OrderedDict
-):
+) -> OrderedDict:
     """Given a forged gradient, computes the according forged model:
 
     $$

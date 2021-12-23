@@ -1,8 +1,3 @@
-<<<<<<< HEAD
-keys.json
-
-*.ipynb_checkpoints
-=======
 *.pynb
 *.csv
 *.pth
@@ -10,4 +5,3 @@ keys.json
 
 keys.json
 
->>>>>>> 3fd7339566a45c67a445bda69274afc47cf00486
