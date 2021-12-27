@@ -28,6 +28,18 @@ class Federated():
         load_model_from : str,
         testing : bool = False
     ):
+        """[summary]
+
+        :param pipeline_args: [description]
+        :type pipeline_args: str
+        :param federated_args: [description]
+        :type federated_args: str
+        :param load_model_from: [description]
+        :type load_model_from: str
+        :param testing: [description], defaults to False
+        :type testing: bool, optional
+        :raises NotImplementedError: [description]
+        """    
         if self.__class__ == Federated:
             raise NotImplementedError("""This is an abstract class""")
         self.testing = testing
@@ -187,7 +199,11 @@ class Federated():
 
         logging.info(f'generated {self.num_nodes} nodes with {self.num_bysantine} byzantine')
 
-    def get_node_dataloader(self, node, val = False):
+    def get_node_dataloader(
+        self,
+        node : Node,
+        val : bool = False
+    ) -> torch.utils.data.DataLoader:
         """
         Returns a torch.utils.data.DataLoader with the test set of the node
         or the validation set if val = True
@@ -276,6 +292,11 @@ class Federated():
         )
 
     def init_lambdas(self, num_nodes : int):
+        """Initializes the lambdas for all nodes as $\lambda_n/K$
+
+        :param num_nodes: $K$, total number of nodes
+        :type num_nodes: int
+        """        
         self.lambdas = {}
         if self.federated_args['lambdas'] == 'uniform':
             for node_id in range(1, num_nodes+1):
@@ -295,15 +316,15 @@ class Federated():
             weights = torch.load(self.embeddings_path)['weight']
             model.embedding_layer.weight.copy_(weights)
 
-    def save_weights(self, node_id : int = 0):
-        """
-        Given a node id, saves the rnn and linear weights of the current node model. If the id is 0, will save 
+    def save_weights(
+        self,
+        node_id : int = 0
+    ):
+        """Given a node id, saves the rnn and linear weights of the current node model. If the id is 0, will save 
         the general model.
 
-        Parameters
-        ----------
-        - node_id : int
-            The node to save to.
+        :param node_id: The node to save to, defaults to 0
+        :type node_id: int, optional
         """
         if node_id == 0:
             model = self.general_model
@@ -322,18 +343,15 @@ class Federated():
         torch.save(optim_stat_dict, optim_path)
 
     def load_weights(self, node_id : int = 0, model : NextWordPredictorModel = None):
-        """
-        Given a node id and a NextWordPredictoModel, loads the rnn and linear weights from the 
+        """Given a node id and a NextWordPredictoModel, loads the rnn and linear weights from the 
         corresponding node in the model. If the id is 0, will load to the general model. It also
         loads the optimizer specific to the id.
 
-        Parameters
-        ----------
-        - node_id : int
-            The id of the node
-        - model : NextWordPredictorModel
-            The model to load the weigths in
-        """
+        :param node_id: The id of the node, defaults to 0
+        :type node_id: int, optional
+        :param model: The model to load the weigths in, defaults to None
+        :type model: NextWordPredictorModel, optional
+        """        
         if model is None:
             model = self.general_model
         rnn_path = os.path.join(self.rnn_folder, 'rnn_general.pth' if node_id == 0 else f"rnn_{node_id}.pth")
@@ -356,7 +374,14 @@ class Federated():
         self.load_weights(node_id, self.user_model)
         return self.user_model.generate(start_text=start_text, vocabulary = self.vocabulary, num_words=num_words, random = random)
 
-    def train(self, num_rounds, save_results = True):
+    def train(self, num_rounds : int, save_results = True):
+        """The main training method.
+
+        :param num_rounds: $T$, the total number of rounds
+        :type num_rounds: int
+        :param save_results: Whether to save the results at the end, defaults to True
+        :type save_results: bool, optional
+        """
         self.results = {}
         for round in range(num_rounds+1):
             self.results[round] = {}
@@ -370,6 +395,12 @@ class Federated():
             self.save_results()
 
     def select_nodes(self):
+        """Given the $C$ parameter, select $K * C$ nodes to perform the epoch step
+        for this round
+
+        :return: a tuple containing the non participating and participating ids.
+        :rtype: Tuple[List[int], List[int]]
+        """        
         ids = np.arange(1, self.federated_args['num_training_nodes'] + 1)
         np.random.shuffle(ids)
         index = int(self.federated_args['C'] * len(ids))
@@ -391,7 +422,7 @@ class Federated():
 
     def save_results(self):
         """
-        Saves the results obtained during training
+        Saves the results obtained during training as well as the used hyperparameters
         """
         logging.info('saving results')
         results_path = self.federated_args['results_folder']

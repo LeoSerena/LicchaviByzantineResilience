@@ -4,8 +4,6 @@ import os
 import re
 import sys
 import pickle
-
-
 import torch
 
 sys.path.append('.')
