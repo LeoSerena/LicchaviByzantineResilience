@@ -1,6 +1,7 @@
 *.pynb
 *.csv
 *.pth
+*.pyc
 /dataverse_files
 
 keys.json

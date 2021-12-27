@@ -567,8 +567,18 @@ class Federated_AVG(Federated):
             node.state = self.general_model.state_dict().copy()
         self.weigthed_avg(total_data, ids=ids)
 
-    def weigthed_avg(self, total_data, ids = None):
-        # perform node weighted average
+    def weigthed_avg(
+        self, 
+        total_data : int, 
+        ids : list[int] = None
+    ):
+        """Performs the weighted average of the node models.
+
+        :param total_data: the total number of samples
+        :type total_data: int
+        :param ids: The node ids to consider for averaging, defaults to None
+        :type ids: list[int], optional
+        """
         for i,node in self.nodes.items():
             if (ids is None) or (i in ids):
                 node_state_dict = node.state
@@ -582,10 +592,20 @@ class Federated_AVG(Federated):
                         self.agg_state_dict[key] = self.agg_state_dict[key] + node_state_dict[key] * ratio
 
     def update_trackers(self):
+        """Helper for strategic model forging attack: saves the previous learning rate and the previous 
+        general model state dict
+        """
         self.prev_lr = 1
         self.prev_general_model_state_dict = self.general_model.state_dict().copy()
 
-    def general_model_update(self, round):
+    def general_model_update(self, round : int):
+        """Updates the general model by replacing the general model weigths by 
+        the weights present in the self.current_state_dict, updated in the 
+        nodes_epoch_step with the weighted_avg method.
+
+        :param round: The current round
+        :type round: int
+        """
         if self.strat:
             self.update_trackers()
         self.current_state_dict = self.agg_state_dict
@@ -595,6 +615,22 @@ class Federated_AVG(Federated):
 
 
     def evaluate_metrics(self, round):
+        """Evaluated the metrics for the current round. The metrics evaluated are
+        - General model:
+            - perplexity
+            - loss
+            - f1
+            - f3
+            - attack sentence generation
+            - attack perplexity
+        - nodes:
+            - perplexity
+            - loss
+            - f1
+            - f3
+        :param round: current round
+        :type round: int
+        """
         start_text = ' '.join(self.federated_args['sentence'].split(' ')[:5])
         res = self.results[round]
         val_dataloader = torch.utils.data.DataLoader(
@@ -644,10 +680,14 @@ class Federated_LICCHAVI(Federated):
         else:
             return 'LICCHAVI_L2'
 
-    def models_difference(self, node : Node):
-        """
-        Computes the p normed difference between the general model and another
+    def models_difference(self, node : Node) -> torch.Tensor:
+        """Computes the p normed difference between the general model and another
         for the parameters that require gradient excepting biases.
+
+        :param node: Node to compute the distance with
+        :type node: Node
+        :return: The loss tensor
+        :rtype: torch.Tensor
         """
         reg = torch.FloatTensor([0]).to(self.general_model.device)
         if node.lambda_ == 0:
@@ -660,6 +700,8 @@ class Federated_LICCHAVI(Federated):
             return reg
 
     def init_user_model(self):
+        """Initializes the user_model, reseting weights and optimizer.
+        """
         self.model_parameters['LEARNING_RATE'] = self.federated_args['node_model_lr']
         self.user_model = init_model(None, **self.model_parameters)
         self.load_embeddings(self.user_model)
@@ -671,7 +713,6 @@ class Federated_LICCHAVI(Federated):
         Prepares the general model for training and setup the lamdba_0
         and p_0 paramters.
         """
-        # Initialize the general model
         self.general_model.gamma = self.federated_args['lambda_0']
         self.general_model.q = self.federated_args['p_0']
         self.general_model.train()
@@ -755,7 +796,13 @@ class Federated_LICCHAVI(Federated):
                 self.evaluate_metrics_node(node_id, node, round)
             self.save_weights(node_id) 
     
-    def general_model_update(self, round):
+    def general_model_update(self, round : int):
+        """Updates the general model by computing the regularizazion loss on all the user
+        models and performing a gradient step.
+
+        :param round: the current round
+        :type round: int
+        """
         if self.strat:
             self.update_trackers()
             self.results[round]['L1'] = []
@@ -793,7 +840,15 @@ class Federated_LICCHAVI(Federated):
         self.prev_lr = self.general_model.optimizer.state_dict()['param_groups'][0]['lr']
         self.prev_general_model_state_dict = self.general_model.state_dict().copy()
 
-    def compute_grads(self, reg, round):
+    def compute_grads(self, reg : torch.Tensor, round : int):
+        """Computes the gradient with respect to the general model and stores it in
+        the add_grad_to_results attribute
+
+        :param reg: The loss regularization tensor
+        :type reg: torch.Tensor
+        :param round: Current round
+        :type round: int
+        """
         gradients = torch.autograd.grad(
             reg,
             [p for (n,p) in self.general_model.named_parameters() if (p.requires_grad and 'bias' not in n)],
