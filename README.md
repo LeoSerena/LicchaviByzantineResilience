@@ -108,7 +108,7 @@ Results are then saved in the */results* or */attack_results* folder depending o
 
 ## PAPERS
 
-- google next word prediciton:
+- google next word prediction:
 
 https://arxiv.org/pdf/1811.03604.pdf
 
