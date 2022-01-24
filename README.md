@@ -116,7 +116,7 @@ https://ai.googleblog.com/2017/04/federated-learning-collaborative.html
 
 - Federated Learning
 
-https://arxiv.org/pdf/1602.05629.pdf
+https://arxiv.org/pdf/1602.05629v1.pdf
 
 - Federarge AVG
 
