@@ -125,7 +125,11 @@ class Vocabulary():
 
         logging.info('vocabulary built')
 
-    def get_vocab_size(self):
+    def get_vocab_size(self) -> int:
+        """Returns the length of the Vocabulary
+
+        :rtype: int
+        """
         return len(self.word_to_idx)
 
 class FromRawTextVocabulary(Vocabulary):
@@ -240,7 +244,7 @@ class SequenceDataset(torch.utils.data.Dataset):
             sequence = sequence[:-1]
         return sequence.reshape(-1, self.max_seq_length)
 
-    def token_len(self):
+    def token_len(self) -> int:
         """
         counts the number of tokens in the dataset
         """
@@ -249,7 +253,7 @@ class SequenceDataset(torch.utils.data.Dataset):
             total += sum(tokens > 0)
         return total
 
-    def get_idx(self, token):
+    def get_idx(self, token) -> int:
         """Gets the id of the token from the vocabulary
 
         :param token: a word token

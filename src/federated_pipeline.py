@@ -6,6 +6,7 @@ import logging
 import pickle
 import gc
 from datetime import date
+from typing import List
 
 import numpy as np
 from tqdm import tqdm
@@ -28,6 +29,18 @@ class Federated():
         load_model_from : str,
         testing : bool = False
     ):
+        """[summary]
+
+        :param pipeline_args: [description]
+        :type pipeline_args: str
+        :param federated_args: [description]
+        :type federated_args: str
+        :param load_model_from: [description]
+        :type load_model_from: str
+        :param testing: [description], defaults to False
+        :type testing: bool, optional
+        :raises NotImplementedError: [description]
+        """    
         if self.__class__ == Federated:
             raise NotImplementedError("""This is an abstract class""")
         self.testing = testing
@@ -187,7 +200,11 @@ class Federated():
 
         logging.info(f'generated {self.num_nodes} nodes with {self.num_bysantine} byzantine')
 
-    def get_node_dataloader(self, node, val = False):
+    def get_node_dataloader(
+        self,
+        node : Node,
+        val : bool = False
+    ) -> torch.utils.data.DataLoader:
         """
         Returns a torch.utils.data.DataLoader with the test set of the node
         or the validation set if val = True
@@ -276,6 +293,11 @@ class Federated():
         )
 
     def init_lambdas(self, num_nodes : int):
+        """Initializes the lambdas for all nodes as $\lambda_n/K$
+
+        :param num_nodes: $K$, total number of nodes
+        :type num_nodes: int
+        """        
         self.lambdas = {}
         if self.federated_args['lambdas'] == 'uniform':
             for node_id in range(1, num_nodes+1):
@@ -295,15 +317,15 @@ class Federated():
             weights = torch.load(self.embeddings_path)['weight']
             model.embedding_layer.weight.copy_(weights)
 
-    def save_weights(self, node_id : int = 0):
-        """
-        Given a node id, saves the rnn and linear weights of the current node model. If the id is 0, will save 
+    def save_weights(
+        self,
+        node_id : int = 0
+    ):
+        """Given a node id, saves the rnn and linear weights of the current node model. If the id is 0, will save 
         the general model.
 
-        Parameters
-        ----------
-        - node_id : int
-            The node to save to.
+        :param node_id: The node to save to, defaults to 0
+        :type node_id: int, optional
         """
         if node_id == 0:
             model = self.general_model
@@ -322,18 +344,15 @@ class Federated():
         torch.save(optim_stat_dict, optim_path)
 
     def load_weights(self, node_id : int = 0, model : NextWordPredictorModel = None):
-        """
-        Given a node id and a NextWordPredictoModel, loads the rnn and linear weights from the 
+        """Given a node id and a NextWordPredictoModel, loads the rnn and linear weights from the 
         corresponding node in the model. If the id is 0, will load to the general model. It also
         loads the optimizer specific to the id.
 
-        Parameters
-        ----------
-        - node_id : int
-            The id of the node
-        - model : NextWordPredictorModel
-            The model to load the weigths in
-        """
+        :param node_id: The id of the node, defaults to 0
+        :type node_id: int, optional
+        :param model: The model to load the weigths in, defaults to None
+        :type model: NextWordPredictorModel, optional
+        """        
         if model is None:
             model = self.general_model
         rnn_path = os.path.join(self.rnn_folder, 'rnn_general.pth' if node_id == 0 else f"rnn_{node_id}.pth")
@@ -356,7 +375,14 @@ class Federated():
         self.load_weights(node_id, self.user_model)
         return self.user_model.generate(start_text=start_text, vocabulary = self.vocabulary, num_words=num_words, random = random)
 
-    def train(self, num_rounds, save_results = True):
+    def train(self, num_rounds : int, save_results = True):
+        """The main training method.
+
+        :param num_rounds: $T$, the total number of rounds
+        :type num_rounds: int
+        :param save_results: Whether to save the results at the end, defaults to True
+        :type save_results: bool, optional
+        """
         self.results = {}
         for round in range(num_rounds+1):
             self.results[round] = {}
@@ -370,6 +396,12 @@ class Federated():
             self.save_results()
 
     def select_nodes(self):
+        """Given the $C$ parameter, select $K * C$ nodes to perform the epoch step
+        for this round
+
+        :return: a tuple containing the non participating and participating ids.
+        :rtype: Tuple[List[int], List[int]]
+        """        
         ids = np.arange(1, self.federated_args['num_training_nodes'] + 1)
         np.random.shuffle(ids)
         index = int(self.federated_args['C'] * len(ids))
@@ -391,7 +423,7 @@ class Federated():
 
     def save_results(self):
         """
-        Saves the results obtained during training
+        Saves the results obtained during training as well as the used hyperparameters
         """
         logging.info('saving results')
         results_path = self.federated_args['results_folder']
@@ -536,8 +568,18 @@ class Federated_AVG(Federated):
             node.state = self.general_model.state_dict().copy()
         self.weigthed_avg(total_data, ids=ids)
 
-    def weigthed_avg(self, total_data, ids = None):
-        # perform node weighted average
+    def weigthed_avg(
+        self, 
+        total_data : int, 
+        ids : List[int] = None
+    ):
+        """Performs the weighted average of the node models.
+
+        :param total_data: the total number of samples
+        :type total_data: int
+        :param ids: The node ids to consider for averaging, defaults to None
+        :type ids: list[int], optional
+        """
         for i,node in self.nodes.items():
             if (ids is None) or (i in ids):
                 node_state_dict = node.state
@@ -551,10 +593,20 @@ class Federated_AVG(Federated):
                         self.agg_state_dict[key] = self.agg_state_dict[key] + node_state_dict[key] * ratio
 
     def update_trackers(self):
+        """Helper for strategic model forging attack: saves the previous learning rate and the previous 
+        general model state dict
+        """
         self.prev_lr = 1
         self.prev_general_model_state_dict = self.general_model.state_dict().copy()
 
-    def general_model_update(self, round):
+    def general_model_update(self, round : int):
+        """Updates the general model by replacing the general model weigths by 
+        the weights present in the self.current_state_dict, updated in the 
+        nodes_epoch_step with the weighted_avg method.
+
+        :param round: The current round
+        :type round: int
+        """
         if self.strat:
             self.update_trackers()
         self.current_state_dict = self.agg_state_dict
@@ -564,6 +616,22 @@ class Federated_AVG(Federated):
 
 
     def evaluate_metrics(self, round):
+        """Evaluated the metrics for the current round. The metrics evaluated are
+        - General model:
+            - perplexity
+            - loss
+            - f1
+            - f3
+            - attack sentence generation
+            - attack perplexity
+        - nodes:
+            - perplexity
+            - loss
+            - f1
+            - f3
+        :param round: current round
+        :type round: int
+        """
         start_text = ' '.join(self.federated_args['sentence'].split(' ')[:5])
         res = self.results[round]
         val_dataloader = torch.utils.data.DataLoader(
@@ -613,10 +681,14 @@ class Federated_LICCHAVI(Federated):
         else:
             return 'LICCHAVI_L2'
 
-    def models_difference(self, node : Node):
-        """
-        Computes the p normed difference between the general model and another
+    def models_difference(self, node : Node) -> torch.Tensor:
+        """Computes the p normed difference between the general model and another
         for the parameters that require gradient excepting biases.
+
+        :param node: Node to compute the distance with
+        :type node: Node
+        :return: The loss tensor
+        :rtype: torch.Tensor
         """
         reg = torch.FloatTensor([0]).to(self.general_model.device)
         if node.lambda_ == 0:
@@ -629,6 +701,8 @@ class Federated_LICCHAVI(Federated):
             return reg
 
     def init_user_model(self):
+        """Initializes the user_model, reseting weights and optimizer.
+        """
         self.model_parameters['LEARNING_RATE'] = self.federated_args['node_model_lr']
         self.user_model = init_model(None, **self.model_parameters)
         self.load_embeddings(self.user_model)
@@ -640,7 +714,6 @@ class Federated_LICCHAVI(Federated):
         Prepares the general model for training and setup the lamdba_0
         and p_0 paramters.
         """
-        # Initialize the general model
         self.general_model.gamma = self.federated_args['lambda_0']
         self.general_model.q = self.federated_args['p_0']
         self.general_model.train()
@@ -724,7 +797,13 @@ class Federated_LICCHAVI(Federated):
                 self.evaluate_metrics_node(node_id, node, round)
             self.save_weights(node_id) 
     
-    def general_model_update(self, round):
+    def general_model_update(self, round : int):
+        """Updates the general model by computing the regularizazion loss on all the user
+        models and performing a gradient step.
+
+        :param round: the current round
+        :type round: int
+        """
         if self.strat:
             self.update_trackers()
             self.results[round]['L1'] = []
@@ -762,7 +841,15 @@ class Federated_LICCHAVI(Federated):
         self.prev_lr = self.general_model.optimizer.state_dict()['param_groups'][0]['lr']
         self.prev_general_model_state_dict = self.general_model.state_dict().copy()
 
-    def compute_grads(self, reg, round):
+    def compute_grads(self, reg : torch.Tensor, round : int):
+        """Computes the gradient with respect to the general model and stores it in
+        the add_grad_to_results attribute
+
+        :param reg: The loss regularization tensor
+        :type reg: torch.Tensor
+        :param round: Current round
+        :type round: int
+        """
         gradients = torch.autograd.grad(
             reg,
             [p for (n,p) in self.general_model.named_parameters() if (p.requires_grad and 'bias' not in n)],
