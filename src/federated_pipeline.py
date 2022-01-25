@@ -625,7 +625,7 @@ class Federated_LICCHAVI(Federated):
             reg.requires_grad = True
             for ((name, w1), (_, w2)) in zip(self.general_model.named_parameters(), self.user_model.named_parameters()):            
                 if ('bias' not in name) and ('embedding' not in name):
-                    reg = reg + node.lambda_ * torch.dist(w1, w2, node.p)
+                    reg = reg + node.lambda_ * (torch.dist(w1, w2, node.p) ** node.p)
             return reg
 
     def init_user_model(self):
@@ -943,10 +943,28 @@ def attack(federated_alg, dataType, attack_type):
         model_file = "CONFIG_MODEL_TWEETS.json"
         fed_file = "CONFIG_FEDERATED_TWEETS.json"
         byzantine_datasize = 840
+        K = 100
+        if federated_alg == 'LICCHAVI_L2':
+            node_model_lr = 1e-3
+            general_model_lr = 1e-5
+            lambda_0 = 1e-6
+            lambda_n = 1
+            num_epochs = 3
+            C = 1
+            bs = 32
     else:
         model_file = "CONFIG_MODEL_WIKI.json"
         fed_file = "CONFIG_FEDERATED_WIKI.json"
         byzantine_datasize = 96
+        K = 500
+        if federated_alg == 'LICCHAVI_L2':
+            node_model_lr = 1e-3
+            general_model_lr = 1e-4
+            lambda_0 = 1e-6
+            lambda_n = 1
+            num_epochs = 1
+            C = 1
+            bs = 16
     NUM_ROUNDS = 20
     i=0
     if federated_alg == 'FedAVG':
@@ -957,7 +975,7 @@ def attack(federated_alg, dataType, attack_type):
         gamma = 1e-5
         num_epochs = 3
         C = 1
-        for num_training_nodes in [100]:
+        for num_training_nodes in [K]:
             for f in [0, 0.1, 0.3, 0.5]:
                 num_byzantine = int(num_training_nodes * f)
                 update_json(os.path.join('.','config_files', fed_file),
@@ -994,7 +1012,7 @@ def attack(federated_alg, dataType, attack_type):
         num_epochs = 3
         C = 1
         bs = 32
-        for num_training_nodes in [100]:
+        for num_training_nodes in [K]:
             for f in [0, 0.1, 0.3, 0.5]:
                 num_byzantine = int(num_training_nodes * f)
                 update_json(
@@ -1027,19 +1045,12 @@ def attack(federated_alg, dataType, attack_type):
                 i+=1
     elif federated_alg =='LICCHAVI_L2':
         federated = Federated_LICCHAVI
-        node_model_lr = 1e-3
-        general_model_lr = 1e-3
-        lambda_0 = 1e-6
-        lambda_n = 1
-        num_epochs = 3
-        C = 1
-        bs = 32
-        for num_training_nodes in [100]:
+        for num_training_nodes in [K]:
             for f in [0, 0.1, 0.3, 0.5]:
                 num_byzantine = int(num_training_nodes * f)
                 update_json(
                     os.path.join('.','config_files', fed_file),
-                    general_model_lr = node_model_lr * 10,
+                    general_model_lr = node_model_lr,
                     node_model_lr = node_model_lr,
                     lambda_0 = lambda_0,
                     lambda_n = lambda_n,
