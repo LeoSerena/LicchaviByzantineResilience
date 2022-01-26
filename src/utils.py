@@ -4,6 +4,7 @@ import json
 from typing import List, Tuple
 
 import numpy as np
+import torch
 
 def make_dir_if_not_exists(path : str) -> bool:
     """
@@ -67,3 +68,5 @@ def update_json(json_file, **kwargs):
     with open(json_file, 'w') as f:
         json.dump(data, f, indent = 4)
 
+def pseudo_huber_loss(weights1, weights2, delta_c, data_size):
+    return torch.sum(torch.sqrt((delta_c ** 2 / (1 + data_size)) + torch.pow(weights1 - weights2, 2)))

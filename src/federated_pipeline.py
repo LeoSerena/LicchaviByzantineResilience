@@ -15,7 +15,7 @@ import torch
 sys.path.append('.')
 from src.data_processing import  SequenceDataset
 from src.models import NextWordPredictorModel, init_model
-from src.utils import make_dir_if_not_exists, update_json
+from src.utils import make_dir_if_not_exists, update_json, pseudo_huber_loss
 from src.nodes import *
 
 class Federated():
@@ -73,7 +73,7 @@ class Federated():
         self.model_parameters['vocab_size'] = self.vocabulary.get_vocab_size()
         self.model_parameters['LEARNING_RATE'] = self.federated_args['general_model_lr']
         self.general_model = init_model(None,  **self.model_parameters)
-        
+        self.loss_type = self.federated_args.pop('loss_type')
         if load_model_from is None:
             self.load_model_from = os.path.join(
                 self.pipeline_args['TRAINING_PARAMETERS']['model_path'],
@@ -697,7 +697,12 @@ class Federated_LICCHAVI(Federated):
             reg.requires_grad = True
             for ((name, w1), (_, w2)) in zip(self.general_model.named_parameters(), self.user_model.named_parameters()):            
                 if ('bias' not in name) and ('embedding' not in name):
-                    reg = reg + node.lambda_ * (torch.dist(w1, w2, node.p) ** node.p)
+                    if self.loss_type == 'norm':
+                        reg = reg + node.lambda_ * (torch.dist(w1, w2, node.p) ** node.p)
+                    elif self.loss_type == 'huber':
+                        # The lambda_n replaces the w in the paper
+                        # The p_n replaces the delta_c
+                        reg = reg + node.lambda_ * pseudo_huber_loss(w1, w2, node.p, len(node.data))
             return reg
 
     def init_user_model(self):
@@ -1039,6 +1044,15 @@ def attack(federated_alg, dataType, attack_type):
             num_epochs = 3
             C = 1
             bs = 32
+        elif federated_alg == 'HUBER':
+            general_model_lr = 0.005
+            node_model_lr = 0.005
+            lambda_0 = 0
+            lambda_n = 1 # w in the paper
+            p_n = 10 # delta_c in the paper
+            num_epochs = 3
+            C = 1
+            bs = 32
     else:
         model_file = "CONFIG_MODEL_WIKI.json"
         fed_file = "CONFIG_FEDERATED_WIKI.json"
@@ -1074,6 +1088,7 @@ def attack(federated_alg, dataType, attack_type):
                     byzantine_datasize = byzantine_datasize,
                     byzantine_type = attack_type,
                     results_folder = 'attacks_results',
+                    loss_type = 'norm'
                 )
                 update_json(os.path.join('.','config_files', model_file), 
                 TRAINING_PARAMETERS = {
@@ -1114,7 +1129,8 @@ def attack(federated_alg, dataType, attack_type):
                     num_byzantine = num_byzantine,
                     byzantine_datasize = byzantine_datasize,
                     byzantine_type = attack_type,
-                    results_folder = 'attacks_results'
+                    results_folder = 'attacks_results',
+                    loss_type = 'norm'
                 )
                 update_json(os.path.join('.','config_files', model_file), 
                 TRAINING_PARAMETERS = {
@@ -1147,7 +1163,8 @@ def attack(federated_alg, dataType, attack_type):
                     num_byzantine = num_byzantine,
                     byzantine_datasize = byzantine_datasize,
                     byzantine_type = attack_type,
-                    results_folder = 'attacks_results'
+                    results_folder = 'attacks_results',
+                    loss_type = 'norm'
                 )
                 update_json(os.path.join('.','config_files', model_file), 
                 TRAINING_PARAMETERS = {
@@ -1164,7 +1181,41 @@ def attack(federated_alg, dataType, attack_type):
                     logging.info(f'attack {federated.get_name()} {dataType} for f:{f} | K:{num_training_nodes}')
                     federated.train(NUM_ROUNDS)
                 i+=1
-
+    elif federated_alg =='HUBER':
+        federated = Federated_LICCHAVI
+        for num_training_nodes in [K]:
+            for f in [0, 0.1, 0.3, 0.5]:
+                num_byzantine = int(num_training_nodes * f)
+                update_json(
+                    os.path.join('.','config_files', fed_file),
+                    general_model_lr = node_model_lr,
+                    node_model_lr = node_model_lr,
+                    lambda_0 = lambda_0,
+                    lambda_n = lambda_n,
+                    C = C,
+                    p_n = p_n, # this determines L2 loss
+                    num_training_nodes = num_training_nodes,
+                    num_byzantine = num_byzantine,
+                    byzantine_datasize = byzantine_datasize,
+                    byzantine_type = attack_type,
+                    results_folder = 'attacks_results_huber',
+                    loss_type = 'huber'
+                )
+                update_json(os.path.join('.','config_files', model_file), 
+                TRAINING_PARAMETERS = {
+                    "fp16": 0,
+                    'batch_size' : bs,
+                    'num_epochs' : num_epochs
+                },
+                MODEL_PARAMETERS = {
+                    "fp16": 0,
+                    'gamma' : lambda_0
+                })
+                if i>=0:
+                    federated = Federated_LICCHAVI(model_file, fed_file, testing=True)
+                    logging.info(f'attack {federated.get_name()} {dataType} for f:{f} | K:{num_training_nodes}')
+                    federated.train(NUM_ROUNDS)
+                i+=1
 if __name__ == '__main__':
     logging.basicConfig(filename='logs/federated.log', level=logging.DEBUG)
     arguments = sys.argv
@@ -1172,9 +1223,9 @@ if __name__ == '__main__':
     if len(arguments) < 4:
         print('invalid arguments')
         sys.exit(1)
-    elif arguments[1] in ['FedAVG', 'LICCHAVI_L1', 'LICCHAVI_L2']:
+    elif arguments[1] in ['FedAVG', 'LICCHAVI_L1', 'LICCHAVI_L2', 'HUBER']:
         if arguments[3] not in ['tweet', 'wiki']:
-            print('invalid arguments')
+            print('invalid data argument')
             sys.exit(1)
 
         if arguments[2] == 'grid':
@@ -1194,5 +1245,5 @@ if __name__ == '__main__':
 
 
     else:
-        print('invalid arguments')
+        print('invalid algorithm argument')
         sys.exit(1)

@@ -461,7 +461,7 @@ class NextWordPredictorModel(torch.nn.Module):
         current_metric : float,
         epoch : int,
         path : str = None
-    ) -> Union[0, 1]:
+    ) -> int:
         """
         Given a metric and an epoch, determines whether the model should stop early. It
         also uses the self.best_metric, self.best_epoch, self.early_stopping_count and

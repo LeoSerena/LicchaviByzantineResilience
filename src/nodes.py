@@ -9,7 +9,6 @@ import torch
 sys.path.append('.')
 from src.data_processing import  SequenceDataset, Vocabulary
 from src.utils import split_data
-from src.models import init_model
 
 class Node():
     def __init__(
@@ -327,7 +326,7 @@ class StrategicDataPoisoningNode():
             lambda_ = self.lambda_,
             lr = self.lr
         )
-
+        from src.models import init_model
         model = init_model().load_state_dict(model_state_dict)
 
         model.generate(self.N)
