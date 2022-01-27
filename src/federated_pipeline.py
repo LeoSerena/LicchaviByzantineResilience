@@ -676,10 +676,15 @@ class Federated_LICCHAVI(Federated):
             testing
         )
     def get_name(self):
-        if self.nodes[1].p == 1:
-            return 'LICCHAVI_L1'
+        if self.loss_type == 'huber':
+            return 'HUBER'
+        elif self.loss_type == 'norm':
+            if self.nodes[1].p == 1:
+                return 'LICCHAVI_L1'
+            else:
+                return 'LICCHAVI_L2'
         else:
-            return 'LICCHAVI_L2'
+            return 'norm_undefined'
 
     def models_difference(self, node : Node) -> torch.Tensor:
         """Computes the p normed difference between the general model and another
@@ -698,7 +703,7 @@ class Federated_LICCHAVI(Federated):
             for ((name, w1), (_, w2)) in zip(self.general_model.named_parameters(), self.user_model.named_parameters()):            
                 if ('bias' not in name) and ('embedding' not in name):
                     if self.loss_type == 'norm':
-                        reg = reg + node.lambda_ * (torch.dist(w1, w2, node.p) ** node.p)
+                        reg = reg + node.lambda_ * (torch.dist(w1, w2, node.p))#** node.p)
                     elif self.loss_type == 'huber':
                         # The lambda_n replaces the w in the paper
                         # The p_n replaces the delta_c
@@ -1036,9 +1041,18 @@ def attack(federated_alg, dataType, attack_type):
         fed_file = "CONFIG_FEDERATED_TWEETS.json"
         byzantine_datasize = 840
         K = 100
+        results_folder = 'attacks_results_huber'
+        if federated_alg == 'LICCHAVI_L1':
+            node_model_lr = 1e-3
+            general_model_lr = 1e-3
+            lambda_0 = 1e-6
+            lambda_n = 1
+            num_epochs = 3
+            C = 1
+            bs = 32
         if federated_alg == 'LICCHAVI_L2':
             node_model_lr = 1e-3
-            general_model_lr = 1e-5
+            general_model_lr = 1e-3
             lambda_0 = 1e-6
             lambda_n = 1
             num_epochs = 3
@@ -1047,7 +1061,7 @@ def attack(federated_alg, dataType, attack_type):
         elif federated_alg == 'HUBER':
             general_model_lr = 0.005
             node_model_lr = 0.005
-            lambda_0 = 0
+            lambda_0 = 1e-6
             lambda_n = 1 # w in the paper
             p_n = 10 # delta_c in the paper
             num_epochs = 3
@@ -1129,7 +1143,7 @@ def attack(federated_alg, dataType, attack_type):
                     num_byzantine = num_byzantine,
                     byzantine_datasize = byzantine_datasize,
                     byzantine_type = attack_type,
-                    results_folder = 'attacks_results',
+                    results_folder = results_folder,
                     loss_type = 'norm'
                 )
                 update_json(os.path.join('.','config_files', model_file), 
@@ -1163,7 +1177,7 @@ def attack(federated_alg, dataType, attack_type):
                     num_byzantine = num_byzantine,
                     byzantine_datasize = byzantine_datasize,
                     byzantine_type = attack_type,
-                    results_folder = 'attacks_results',
+                    results_folder = results_folder,
                     loss_type = 'norm'
                 )
                 update_json(os.path.join('.','config_files', model_file), 
@@ -1198,7 +1212,7 @@ def attack(federated_alg, dataType, attack_type):
                     num_byzantine = num_byzantine,
                     byzantine_datasize = byzantine_datasize,
                     byzantine_type = attack_type,
-                    results_folder = 'attacks_results_huber',
+                    results_folder = results_folder,
                     loss_type = 'huber'
                 )
                 update_json(os.path.join('.','config_files', model_file), 
