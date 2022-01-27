@@ -1,4 +1,4 @@
-# MSThesis
+# Data Poisoning and Byzantine Resilience of Federated Algorithms in the Context of Natural Language Processing
 
 ## DESCRIPTION
 
